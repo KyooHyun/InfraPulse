@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "transaction-api"
+    static_configs:
+      - targets: ["transaction-api:8000"]

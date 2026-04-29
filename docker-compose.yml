@@ -1,0 +1,83 @@
+services:
+  transaction-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: transaction-api
+    restart: on-failure
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - MYSQL_USER=finops_user
+      - MYSQL_PASSWORD=finops_pass
+      - MYSQL_DATABASE=finops
+
+  simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    container_name: finops-simulator
+    depends_on:
+      transaction-api:
+        condition: service_started
+    environment:
+      - API_BASE_URL=http://transaction-api:8000
+      - SIMULATOR_INTERVAL=15
+      - SIMULATOR_HIGH_VALUE_THRESHOLD=100000
+      - SIMULATOR_LOGIN_USER=simuser
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.0
+    container_name: finops-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: example
+      MYSQL_DATABASE: finops
+      MYSQL_USER: finops_user
+      MYSQL_PASSWORD: finops_pass
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -pexample --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: finops-prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - transaction-api
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: finops-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  mysql_data:

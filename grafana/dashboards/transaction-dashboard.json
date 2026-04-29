@@ -1,0 +1,47 @@
+{
+  "id": null,
+  "title": "FinOps Watch - Transaction Monitoring",
+  "tags": ["transaction", "monitoring", "finops"],
+  "timezone": "browser",
+  "schemaVersion": 36,
+  "version": 1,
+  "refresh": "15s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Total Transactions",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [{"expr": "transaction_total", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "Failed Transactions",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "targets": [{"expr": "transaction_failed_total", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "Anomaly Events",
+      "gridPos": {"x": 0, "y": 8, "w": 8, "h": 8},
+      "targets": [{"expr": "anomaly_event_total", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "High-Value Alerts",
+      "gridPos": {"x": 8, "y": 8, "w": 8, "h": 8},
+      "targets": [{"expr": "anomaly_high_value_total", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "Login Failure Alerts",
+      "gridPos": {"x": 16, "y": 8, "w": 8, "h": 8},
+      "targets": [{"expr": "anomaly_login_failure_total", "refId": "A"}]
+    },
+    {
+      "type": "graph",
+      "title": "API Request Duration (95th percentile)",
+      "gridPos": {"x": 0, "y": 16, "w": 24, "h": 10},
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))", "refId": "A"}]
+    }
+  ]
+}
