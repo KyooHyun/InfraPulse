@@ -1,47 +1,111 @@
 {
   "id": null,
-  "title": "FinOps Watch - Transaction Monitoring",
-  "tags": ["transaction", "monitoring", "finops"],
+  "title": "FinOps Watch - FDS 모니터링",
+  "tags": ["fds", "transaction", "compliance", "finops"],
   "timezone": "browser",
   "schemaVersion": 36,
-  "version": 1,
+  "version": 2,
   "refresh": "15s",
   "panels": [
     {
       "type": "stat",
-      "title": "Total Transactions",
-      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
-      "targets": [{"expr": "transaction_total", "refId": "A"}]
+      "title": "총 거래 건수",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "targets": [{"expr": "transaction_total", "refId": "A"}],
+      "options": {"colorMode": "value", "graphMode": "area"}
     },
     {
       "type": "stat",
-      "title": "Failed Transactions",
-      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
-      "targets": [{"expr": "transaction_failed_total", "refId": "A"}]
+      "title": "거래 실패 건수",
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+      "targets": [{"expr": "transaction_failed_total", "refId": "A"}],
+      "options": {"colorMode": "value", "graphMode": "area", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 10}]}}
     },
     {
       "type": "stat",
-      "title": "Anomaly Events",
-      "gridPos": {"x": 0, "y": 8, "w": 8, "h": 8},
-      "targets": [{"expr": "anomaly_event_total", "refId": "A"}]
+      "title": "FDS 알림 (전체)",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+      "targets": [{"expr": "anomaly_event_total", "refId": "A"}],
+      "options": {"colorMode": "value", "graphMode": "area", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "orange", "value": 5}, {"color": "red", "value": 20}]}}
     },
     {
       "type": "stat",
-      "title": "High-Value Alerts",
-      "gridPos": {"x": 8, "y": 8, "w": 8, "h": 8},
+      "title": "로그인 실패",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+      "targets": [{"expr": "login_failed_total", "refId": "A"}],
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "type": "stat",
+      "title": "고액거래 알림",
+      "gridPos": {"x": 0, "y": 4, "w": 6, "h": 4},
       "targets": [{"expr": "anomaly_high_value_total", "refId": "A"}]
     },
     {
       "type": "stat",
-      "title": "Login Failure Alerts",
-      "gridPos": {"x": 16, "y": 8, "w": 8, "h": 8},
+      "title": "로그인 실패 이상징후",
+      "gridPos": {"x": 6, "y": 4, "w": 6, "h": 4},
       "targets": [{"expr": "anomaly_login_failure_total", "refId": "A"}]
     },
     {
-      "type": "graph",
-      "title": "API Request Duration (95th percentile)",
-      "gridPos": {"x": 0, "y": 16, "w": 24, "h": 10},
-      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))", "refId": "A"}]
+      "type": "stat",
+      "title": "STR (의심거래보고)",
+      "gridPos": {"x": 12, "y": 4, "w": 6, "h": 4},
+      "targets": [{"expr": "compliance_report_total{report_type=\"STR\"}", "refId": "A"}],
+      "options": {"colorMode": "value", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}
+    },
+    {
+      "type": "stat",
+      "title": "CTR (고액현금거래보고)",
+      "gridPos": {"x": 18, "y": 4, "w": 6, "h": 4},
+      "targets": [{"expr": "compliance_report_total{report_type=\"CTR\"}", "refId": "A"}],
+      "options": {"colorMode": "value"}
+    },
+    {
+      "type": "timeseries",
+      "title": "FDS 알림 유형별 추이",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "rate(fds_alert_total[5m])", "legendFormat": "{{alert_type}}", "refId": "A"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "거래 위험점수 분포 (95th percentile)",
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(transaction_risk_score_bucket[5m])) by (le))",
+          "legendFormat": "p95 risk score",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(transaction_risk_score_bucket[5m])) by (le))",
+          "legendFormat": "p50 risk score",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "API 응답 시간 (95th percentile)",
+      "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95 latency",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "컴플라이언스 보고서 누적 (STR / CTR)",
+      "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "compliance_report_total{report_type=\"STR\"}", "legendFormat": "STR", "refId": "A"},
+        {"expr": "compliance_report_total{report_type=\"CTR\"}", "legendFormat": "CTR", "refId": "B"}
+      ]
     }
   ]
 }

@@ -20,6 +20,8 @@ services:
       - MYSQL_USER=finops_user
       - MYSQL_PASSWORD=finops_pass
       - MYSQL_DATABASE=finops
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-changeme-replace-with-strong-random-key-in-production}
+      - JWT_EXPIRE_MINUTES=60
 
   simulator:
     build:
@@ -33,7 +35,9 @@ services:
       - API_BASE_URL=http://transaction-api:8000
       - SIMULATOR_INTERVAL=15
       - SIMULATOR_HIGH_VALUE_THRESHOLD=100000
-      - SIMULATOR_LOGIN_USER=simuser
+      - SIMULATOR_USER=admin
+      - SIMULATOR_PASSWORD=Admin1234!
+      - SIMULATOR_LOGIN_FAIL_USER=simuser
     restart: unless-stopped
 
   mysql:

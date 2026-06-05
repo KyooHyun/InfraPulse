@@ -11,11 +11,16 @@ class Settings(BaseSettings):
     mysql_password: str = "finops_pass"
     mysql_db: str = "finops"
 
+    jwt_secret_key: str = "changeme-in-production-use-strong-random-key"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 60
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
         fields = {
-            "mysql_db": {"env": "MYSQL_DATABASE"}
+            "mysql_db": {"env": "MYSQL_DATABASE"},
+            "jwt_secret_key": {"env": "JWT_SECRET_KEY"},
         }
 
 
