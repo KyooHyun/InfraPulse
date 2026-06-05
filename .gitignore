@@ -26,3 +26,7 @@ test.db
 
 # Docker
 *.log
+
+# Frontend
+frontend/node_modules/
+frontend/dist/

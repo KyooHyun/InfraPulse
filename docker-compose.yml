@@ -83,5 +83,15 @@ services:
     depends_on:
       - prometheus
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: finops-frontend
+    ports:
+      - "3001:80"
+    depends_on:
+      - transaction-api
+
 volumes:
   mysql_data:
