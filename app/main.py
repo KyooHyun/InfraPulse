@@ -1,5 +1,6 @@
 import logging
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
@@ -21,26 +22,6 @@ from . import models
 from .routers import auth, transactions, fds, compliance, kyc, admin
 
 logger = logging.getLogger(__name__)
-
-app = FastAPI(
-    title="금융 거래 이상징후 모니터링 API (FDS)",
-    description=(
-        "이상금융거래탐지(FDS) · AML/KYC · 컴플라이언스 보고 · 감사추적 기능을 갖춘 "
-        "금융 거래 모니터링 시스템\n\n"
-        "**기본 계정**\n"
-        "- admin / Admin1234! (ADMIN)\n"
-        "- risk_officer / Risk1234! (RISK_OFFICER)\n"
-        "- staff / Staff1234! (STAFF)"
-    ),
-    version="2.0.0",
-)
-
-app.include_router(auth.router)
-app.include_router(transactions.router)
-app.include_router(fds.router)
-app.include_router(compliance.router)
-app.include_router(kyc.router)
-app.include_router(admin.router)
 
 DB_INIT_MAX_ATTEMPTS = 30
 DB_INIT_RETRY_DELAY = 2
@@ -99,9 +80,32 @@ def _initialize_db() -> None:
     raise RuntimeError("Database did not become ready in time") from last_err
 
 
-@app.on_event("startup")
-def on_startup() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     _initialize_db()
+    yield
+
+
+app = FastAPI(
+    title="금융 거래 이상징후 모니터링 API (FDS)",
+    description=(
+        "이상금융거래탐지(FDS) · AML/KYC · 컴플라이언스 보고 · 감사추적 기능을 갖춘 "
+        "금융 거래 모니터링 시스템\n\n"
+        "**기본 계정**\n"
+        "- admin / Admin1234! (ADMIN)\n"
+        "- risk_officer / Risk1234! (RISK_OFFICER)\n"
+        "- staff / Staff1234! (STAFF)"
+    ),
+    version="2.1.0",
+    lifespan=lifespan,
+)
+
+app.include_router(auth.router)
+app.include_router(transactions.router)
+app.include_router(fds.router)
+app.include_router(compliance.router)
+app.include_router(kyc.router)
+app.include_router(admin.router)
 
 
 @app.middleware("http")

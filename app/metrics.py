@@ -47,6 +47,11 @@ anomaly_high_value_total = Counter(
     "Anomaly: high-value transaction detected",
 )
 
+anomaly_velocity_total = Counter(
+    "anomaly_velocity_total",
+    "Anomaly: high-frequency transaction velocity detected",
+)
+
 http_request_duration_seconds = Histogram(
     "http_request_duration_seconds",
     "HTTP request duration in seconds",

@@ -1,13 +1,18 @@
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..security import require_role
-from ..schemas import FdsAlertOut, FdsDecisionCreate, FdsDecisionOut, FdsRuleOut, FdsRuleUpdate
+from ..schemas import (
+    FdsAlertOut, FdsDecisionCreate, FdsDecisionOut,
+    FdsRuleOut, FdsRuleUpdate, FdsStatsOut,
+)
 from .. import models, audit
+from ..fds_engine import RISK_LEVEL_HIGH
 
 router = APIRouter(prefix="/fds", tags=["FDS"])
 
@@ -16,13 +21,16 @@ router = APIRouter(prefix="/fds", tags=["FDS"])
 
 @router.get("/alerts", response_model=List[FdsAlertOut], summary="FDS 알림 목록")
 def list_alerts(
+    skip: int = Query(0, ge=0, description="건너뛸 건수"),
+    limit: int = Query(100, ge=1, le=500, description="최대 반환 건수"),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(require_role("RISK_OFFICER", "ADMIN")),
 ):
     return (
         db.query(models.FdsAlert)
         .order_by(models.FdsAlert.created_at.desc())
-        .limit(200)
+        .offset(skip)
+        .limit(limit)
         .all()
     )
 
@@ -129,3 +137,87 @@ def update_rule(
         user_id=current_user.id,
     )
     return rule
+
+
+# ── FDS 운영 통계 ─────────────────────────────────────────────────────────────
+
+@router.get("/stats", response_model=FdsStatsOut, summary="FDS 운영 통계")
+def get_stats(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_role("RISK_OFFICER", "ADMIN")),
+):
+    """
+    FDS 시스템의 정량적 운영 지표를 반환한다.
+
+    - **detection_rate_pct**: 전체 거래 대비 FDS 알림 발생률 (탐지율)
+    - **false_positive_rate_pct**: 검토 완료 알림 중 정상 판정 비율 (오탐율)
+    - **rule_coverage_pct**: 활성 룰 중 실제 알림을 발생시킨 룰 유형 비율
+    - **high_risk_rate_pct**: 전체 거래 중 고위험(score≥70) 거래 비율
+    """
+    # 거래 통계
+    total_txs = db.query(models.Transaction).count()
+    failed_txs = db.query(models.Transaction).filter(models.Transaction.status == "failed").count()
+
+    # FDS 알림 통계
+    total_alerts = db.query(models.FdsAlert).count()
+    pending = db.query(models.FdsAlert).filter(models.FdsAlert.status == "DETECTED").count()
+    approved = db.query(models.FdsAlert).filter(models.FdsAlert.status == "APPROVED").count()
+    rejected = db.query(models.FdsAlert).filter(models.FdsAlert.status == "REJECTED").count()
+
+    # 알림 유형별 집계
+    alerts_by_rule: dict = {}
+    for alert_type, count in (
+        db.query(models.FdsAlert.alert_type, func.count(models.FdsAlert.id))
+        .group_by(models.FdsAlert.alert_type)
+        .all()
+    ):
+        alerts_by_rule[alert_type] = count
+
+    # 위험 점수 통계
+    avg_score = db.query(func.avg(models.Transaction.risk_score)).scalar() or 0.0
+    high_risk = db.query(models.Transaction).filter(
+        models.Transaction.risk_score >= RISK_LEVEL_HIGH
+    ).count()
+
+    # 컴플라이언스 보고서
+    str_total = db.query(models.ComplianceReport).filter(
+        models.ComplianceReport.report_type == "STR"
+    ).count()
+    ctr_total = db.query(models.ComplianceReport).filter(
+        models.ComplianceReport.report_type == "CTR"
+    ).count()
+    pending_compliance = db.query(models.ComplianceReport).filter(
+        models.ComplianceReport.status == "PENDING"
+    ).count()
+
+    # 룰 커버리지: 활성 룰 수 vs 실제 알림이 발생한 룰 유형 수
+    active_rules = db.query(models.FdsRule).filter(models.FdsRule.is_active.is_(True)).count()
+    triggered_types = len(alerts_by_rule)
+
+    # 비율 계산
+    failure_rate = round(failed_txs / total_txs * 100, 2) if total_txs else 0.0
+    detection_rate = round(total_alerts / total_txs * 100, 2) if total_txs else 0.0
+    resolved = approved + rejected
+    false_positive_rate: Optional[float] = round(approved / resolved * 100, 2) if resolved else None
+    high_risk_rate = round(high_risk / total_txs * 100, 2) if total_txs else 0.0
+    rule_coverage = round(triggered_types / active_rules * 100, 2) if active_rules else 0.0
+
+    return FdsStatsOut(
+        total_transactions=total_txs,
+        failed_transactions=failed_txs,
+        failure_rate_pct=failure_rate,
+        total_alerts=total_alerts,
+        pending_review=pending,
+        detection_rate_pct=detection_rate,
+        false_positive_rate_pct=false_positive_rate,
+        alerts_by_rule=alerts_by_rule,
+        avg_risk_score=round(float(avg_score), 2),
+        high_risk_count=high_risk,
+        high_risk_rate_pct=high_risk_rate,
+        str_total=str_total,
+        ctr_total=ctr_total,
+        pending_compliance=pending_compliance,
+        active_rule_count=active_rules,
+        triggered_rule_types=triggered_types,
+        rule_coverage_pct=rule_coverage,
+    )

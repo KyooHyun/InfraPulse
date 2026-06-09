@@ -1,4 +1,3 @@
-from collections import deque
 from random import random
 from typing import List
 
@@ -13,6 +12,7 @@ from ..metrics import (
     anomaly_event_total,
     anomaly_high_value_total,
     anomaly_transaction_failure_total,
+    anomaly_velocity_total,
     fds_alert_total,
     risk_score_histogram,
     transaction_failed_total,
@@ -23,9 +23,6 @@ from ..security import get_current_user
 from .. import models, audit
 
 router = APIRouter(prefix="/transactions", tags=["거래"])
-
-# 최근 50건의 성공/실패 결과 (실패율 계산용)
-_recent_results: deque = deque(maxlen=50)
 
 
 @router.get("", response_model=List[TransactionOut], summary="거래 목록 조회")
@@ -54,20 +51,17 @@ def transfer(
     tx_status = "success" if success else "failed"
     reason = "completed" if success else "random failure"
 
-    # 2. 실패율 추적 갱신
-    _recent_results.append(success)
-
-    # 3. FDS 평가 (DB 기반 룰)
+    # 2. FDS 평가 — DB 기반 룰 (전역 상태 없음)
     rules = get_active_rules(db)
-    risk_score, triggered = evaluate_transaction(req.amount, _recent_results, rules)
+    risk_score, triggered = evaluate_transaction(req.amount, req.account_from, db, rules)
 
-    # 4. 거래 저장 (risk_score 포함)
+    # 3. 거래 저장
     transaction = create_transaction(db, req, tx_status, reason, risk_score=risk_score)
     transaction_total.inc()
     if not success:
         transaction_failed_total.inc()
 
-    # 5. FDS 알림 생성 (트리거된 룰별)
+    # 4. FDS 알림 생성 (트리거된 룰별)
     for alert_type in triggered:
         alert = models.FdsAlert(
             transaction_id=transaction.id,
@@ -83,23 +77,25 @@ def transfer(
             anomaly_high_value_total.inc()
         elif alert_type == "FAILURE_RATE":
             anomaly_transaction_failure_total.inc()
+        elif alert_type == "VELOCITY":
+            anomaly_velocity_total.inc()
 
     if triggered:
         db.commit()
 
     risk_score_histogram.observe(risk_score)
 
-    # 6. 고위험(70점 이상) → STR 자동 생성
+    # 5. 고위험(70점 이상) → STR 자동 생성
     if risk_score >= RISK_LEVEL_HIGH:
         create_str(
             db, transaction,
             reason=f"고위험 이상거래 탐지 — 위험점수: {risk_score:.1f}, 룰: {', '.join(triggered)}",
         )
 
-    # 7. CTR: 1천만원 이상 → 자동 고액현금거래 보고
+    # 6. CTR: 1천만원 이상 → 자동 고액현금거래 보고
     try_create_ctr(db, transaction)
 
-    # 8. 감사 로그
+    # 7. 감사 로그
     audit.log_event(
         db,
         action="CREATE_TRANSACTION",
