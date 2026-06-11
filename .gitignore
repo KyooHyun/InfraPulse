@@ -26,3 +26,10 @@ test.db
 
 # Docker
 *.log
+
+# ML 모델 — 재학습 가능하므로 커밋 불필요
+*.joblib
+
+# Kaggle API 키 — 절대 커밋하지 않는다
+kaggle.json
+evaluation/data/
