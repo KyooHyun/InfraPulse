@@ -1,0 +1,34 @@
+{
+  "note": "Credit Card Fraud(ULB) 평가 결과. PaySim 대비 개선 사유: V1-V28 PCA 피처로 IF 분리도 확보.",
+  "evaluated_at": "2026-06-11T07:36:29.582782+00:00",
+  "dataset": "ULB Credit Card Fraud (n=284,807, fraud=492)",
+  "rule_description": "HIGH_VALUE: Amount >= p95(365.00) → 45.0점",
+  "flag_threshold": 40.0,
+  "alpha_rule": 0.4,
+  "alpha_if": 0.6,
+  "rule_only": {
+    "threshold": 40.0,
+    "true_positive_rate": 0.0874,
+    "false_positive_rate": 0.0499,
+    "precision": 0.003,
+    "f1_score": 0.0058,
+    "n_flagged": 14242,
+    "n_frauds_caught": 43,
+    "n_false_alarms": 14199
+  },
+  "hybrid_rule_if": {
+    "threshold": 40.0,
+    "true_positive_rate": 0.0833,
+    "false_positive_rate": 0.025,
+    "precision": 0.0057,
+    "f1_score": 0.0107,
+    "n_flagged": 7137,
+    "n_frauds_caught": 41,
+    "n_false_alarms": 7096
+  },
+  "improvement": {
+    "fpr_reduction_pct": 49.9,
+    "recall_delta_pct": -0.41
+  },
+  "paysim_note": "PaySim으로 먼저 시도했으나 룰 탐지 집합 내 IF 분리도 불량 (사기 p25=45.1 ≈ 정상 p75=46.9)으로 개선 없었음. 고액 거래가 사기·정상 무관하게 이상치로 분류되는 PaySim 구조적 한계."
+}

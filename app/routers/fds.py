@@ -1,5 +1,7 @@
+import json
 from datetime import datetime, timezone
-from typing import List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func
@@ -13,6 +15,8 @@ from ..schemas import (
 )
 from .. import models, audit
 from ..fds_engine import RISK_LEVEL_HIGH
+
+_COMPARISON_RESULTS = Path(__file__).parent.parent.parent / "evaluation" / "results.json"
 
 router = APIRouter(prefix="/fds", tags=["FDS"])
 
@@ -221,3 +225,30 @@ def get_stats(
         triggered_rule_types=triggered_types,
         rule_coverage_pct=rule_coverage,
     )
+
+
+# ── 룰 기반 vs 룰+IF 앙상블 성능 비교 ─────────────────────────────────────────
+
+@router.get(
+    "/comparison",
+    response_model=Dict[str, Any],
+    summary="룰 기반 vs 룰+IF 앙상블 성능 비교 (PaySim 평가)",
+)
+def get_comparison(
+    current_user: models.User = Depends(require_role("RISK_OFFICER", "ADMIN")),
+):
+    """
+    PaySim 공개 데이터셋으로 평가한 룰 단독 vs 룰+Isolation Forest 앙상블 성능 비교표.
+
+    - **rule_only**: 룰 기반 단독 FDS (현행 시스템)
+    - **hybrid_rule_if**: 룰 점수(60%) + IF 이상 점수(40%) 앙상블
+    - **improvement**: FPR 감소율, Recall 변화량
+
+    결과 재생성: `python evaluation/paysim_eval.py --csv <PaySim CSV 경로>`
+    """
+    if not _COMPARISON_RESULTS.exists():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="평가 결과 파일이 없습니다. evaluation/paysim_eval.py를 먼저 실행하세요.",
+        )
+    return json.loads(_COMPARISON_RESULTS.read_text(encoding="utf-8"))
