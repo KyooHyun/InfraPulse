@@ -1,6 +1,6 @@
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from ..db import get_db
@@ -83,12 +83,15 @@ def deactivate_user(
 
 @router.get("/audit-logs", response_model=List[AuditLogOut], summary="감사 로그 조회")
 def list_audit_logs(
+    skip: int = Query(0, ge=0, description="건너뛸 건수"),
+    limit: int = Query(100, ge=1, le=1000, description="최대 반환 건수"),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(require_role("ADMIN")),
 ):
     return (
         db.query(models.AuditLog)
         .order_by(models.AuditLog.created_at.desc())
-        .limit(500)
+        .offset(skip)
+        .limit(limit)
         .all()
     )

@@ -63,7 +63,18 @@ def create_str(
     tx: models.Transaction,
     reason: str,
 ) -> models.ComplianceReport:
-    """FDS 고위험 거래에 대해 STR을 생성한다."""
+    """FDS 고위험 거래에 대해 STR을 생성한다. 동일 거래에 중복 생성하지 않는다."""
+    existing = (
+        db.query(models.ComplianceReport)
+        .filter(
+            models.ComplianceReport.transaction_id == tx.id,
+            models.ComplianceReport.report_type == "STR",
+        )
+        .first()
+    )
+    if existing:
+        return existing
+
     report = models.ComplianceReport(
         report_type="STR",
         transaction_id=tx.id,
