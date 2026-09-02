@@ -22,6 +22,19 @@ from ..schemas import TransactionOut, TransferRequest
 from ..security import get_current_user
 from .. import models, audit
 
+# sklearn/numpy가 설치된 환경에서만 ML 레이어 활성화
+# Docker 컨테이너(requirements.txt 설치 후)에서는 항상 활성화됨
+_ML_AVAILABLE = False
+_if_model = None
+try:
+    from ..ml.isolation_forest import IFModel
+    from ..ml.features import extract_features
+    from ..ml.ensemble import ensemble_score as compute_ensemble
+    _if_model = IFModel.load()  # 모델 아티팩트 없으면 None
+    _ML_AVAILABLE = True
+except ImportError:
+    pass
+
 router = APIRouter(prefix="/transactions", tags=["거래"])
 
 
@@ -53,7 +66,7 @@ def transfer(
 
     # 2. FDS 평가 — DB 기반 룰 (전역 상태 없음)
     rules = get_active_rules(db)
-    risk_score, triggered = evaluate_transaction(req.amount, req.account_from, db, rules)
+    risk_score, triggered, contributions = evaluate_transaction(req.amount, req.account_from, db, rules)
 
     # 3. 거래 저장
     transaction = create_transaction(db, req, tx_status, reason, risk_score=risk_score)
@@ -61,14 +74,28 @@ def transfer(
     if not success:
         transaction_failed_total.inc()
 
+    # 3a. ML 앙상블 점수 — sklearn 설치 + 모델 학습 완료 시에만 동작
+    feat = None
+    ml_score: float | None = None
+    ens_score: float | None = None
+    if _ML_AVAILABLE and _if_model is not None:
+        feat = extract_features(transaction, db)
+        ml_score = _if_model.anomaly_score(feat)
+        ens_score = compute_ensemble(risk_score, ml_score)
+        transaction.ml_anomaly_score = ml_score
+        transaction.ensemble_score = ens_score
+
     # 4. FDS 알림 생성 (트리거된 룰별)
     for alert_type in triggered:
+        detail = f"위험점수: {risk_score:.1f} | 트리거: {alert_type}"
+        if ml_score is not None:
+            detail += f" | ML점수: {ml_score:.3f} | 앙상블: {ens_score:.1f}"
         alert = models.FdsAlert(
             transaction_id=transaction.id,
             alert_type=alert_type,
-            risk_score=risk_score,
+            risk_score=ens_score if ens_score is not None else risk_score,
             status="DETECTED",
-            detail=f"위험점수: {risk_score:.1f} | 트리거: {alert_type}",
+            detail=detail,
         )
         db.add(alert)
         anomaly_event_total.inc()
@@ -80,7 +107,8 @@ def transfer(
         elif alert_type == "VELOCITY":
             anomaly_velocity_total.inc()
 
-    if triggered:
+    # ML 점수 또는 알림이 생성된 경우 단일 커밋으로 처리
+    if triggered or ml_score is not None:
         db.commit()
 
     risk_score_histogram.observe(risk_score)

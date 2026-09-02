@@ -50,6 +50,8 @@ class TransactionOut(BaseModel):
     reason: Optional[str]
     risk_score: float
     created_at: datetime
+    ml_anomaly_score: Optional[float] = None
+    ensemble_score: Optional[float] = None
 
 
 # ── 인증 ──────────────────────────────────────────────────────────────────────

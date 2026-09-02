@@ -40,7 +40,14 @@ simulator ───────────────────────�
 ```
 
 ---
-
+## ML / PaySim 검증 전략
+- 공개 모바일 머니 거래 데이터셋 **PaySim**(Kaggle)을 외부 벤치마크로 사용합니다.
+- `scripts/load_paysim.py`로 CSV를 DB에 적재하고, PaySim의 `is_fraud` 라벨을 그대로 보존합니다.
+- `scripts/train_model.py`는 Isolation Forest를 비지도 학습으로 학습하며, 레이블은 평가용으로만 사용합니다.
+- `scripts/evaluate.py`는 룰 기반 베이스라인, Isolation Forest, 그리고 룰+ML 앙상블을 비교해 precision / recall / FPR 트레이드오프를 명시합니다.
+- PaySim 평가 시에는 CSV에 포함된 `TRANSFER`/`CASH_OUT` 거래와 PaySim에 존재하는 룰 피처만 사용합니다. 로그인 실패, 거래 실패율, 응답 지연과 같은 항목은 PaySim 원본 데이터에 직접 포함되지 않아 별도 평가 대상에서 제외됩니다.
+- 알림별 `rule_contributions`와 ML `z-score` 기반 상위 이상 피처를 함께 제공해 설명가능성을 확보합니다.
+- Autoencoder는 작은 PaySim 샘플과 튜닝 리스크를 고려해 현재 구현 범위에 포함하지 않습니다.
 ## 핵심 기능
 
 ### 1. JWT 기반 RBAC 인증
@@ -186,7 +193,14 @@ docker compose up --build
 | Prometheus | http://localhost:9090 |
 | Grafana | http://localhost:3000 |
 
-### 4. 기본 계정
+### 4. ML 평가 파이프라인
+```bash
+python scripts/load_paysim.py <PaySim CSV 경로>  # PaySim 데이터를 DB에 적재
+python scripts/train_model.py                    # Isolation Forest 학습
+python scripts/evaluate.py                       # 룰 vs ML vs 앙상블 평가
+```
+
+### 5. 기본 계정
 
 | 사용자명 | 비밀번호 | 역할 |
 |---------|---------|------|
@@ -205,12 +219,21 @@ docker compose up --build
 pip install pytest
 
 # 전체 테스트 실행 (SQLite 인메모리 DB 사용 — Docker 불필요)
-pytest tests/ -v
+pytest tests/ -q
 ```
+
+현재 환경에서 실행한 결과: **44 passed** (68 warnings)
 
 테스트 범위: 인증/RBAC, 거래 생성, FDS 알림 검토, 컴플라이언스 보고, KYC — 총 **30개 이상** 테스트 케이스
 
 ---
+
+## 향후 계획
+- **드리프트 모니터링**: 학습 데이터 분포 대비 운영 거래 분포를 비교하여 개념 드리프트를 경고.
+- **모델 버전 관리**: MLflow 또는 유사 도구로 모델 아티팩트, 하이퍼파라미터, 평가 지표를 추적.
+- **추가 이상치 탐지 후보**: 현재는 Isolation Forest 중심; 필요 시 LOF(지역 밀도 기반 이상치 감지)를 비교할 수 있음.
+
+> 위 항목은 로드맵이며, 현재 프로젝트에서는 주로 PaySim 기반 룰 베이스라인과 Isolation Forest 앙상블 검증에 집중합니다.
 
 ## Grafana 대시보드
 

@@ -7,7 +7,7 @@
   70~100 HIGH  — FDS 알림 생성 + STR(의심거래보고서) 자동 생성
 """
 from datetime import datetime, timedelta, timezone
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -46,9 +46,9 @@ def evaluate_transaction(
     account_from: str,
     db: Session,
     rules: List[models.FdsRule],
-) -> Tuple[float, List[str]]:
+) -> Tuple[float, List[str], List[Dict[str, Any]]]:
     """
-    거래에 대한 위험점수와 트리거된 룰 유형 목록을 반환한다.
+    거래에 대한 위험점수, 트리거된 룰 유형 목록, 룰별 기여 내역을 반환한다.
 
     - HIGH_VALUE:   금액이 임계값 이상이면 트리거
     - FAILURE_RATE: 최근 N건 중 실패율이 임계값 이상이면 트리거 (DB 집계)
@@ -56,20 +56,27 @@ def evaluate_transaction(
     - LOGIN_FAILURE / LATENCY: auth.py / middleware에서 별도 처리
 
     Returns:
-        (risk_score, triggered_types)
+        (risk_score, triggered_types, contributions)
+        contributions: [{"rule_type", "fired", "weight", "threshold", "actual_value"}, ...]
     """
     rule_map = {r.condition_type: r for r in rules}
     score = 0.0
     triggered: List[str] = []
+    contributions: List[Dict[str, Any]] = []
 
     # HIGH_VALUE: 단순 금액 임계값 비교
     if "HIGH_VALUE" in rule_map:
-        if amount >= rule_map["HIGH_VALUE"].threshold:
-            score += rule_map["HIGH_VALUE"].weight
+        r = rule_map["HIGH_VALUE"]
+        fired = amount >= r.threshold
+        if fired:
+            score += r.weight
             triggered.append("HIGH_VALUE")
+        contributions.append({"rule_type": "HIGH_VALUE", "fired": fired,
+                               "weight": r.weight, "threshold": r.threshold, "actual_value": amount})
 
     # FAILURE_RATE: DB에서 최근 FAILURE_RATE_WINDOW건의 실패율 계산
     if "FAILURE_RATE" in rule_map:
+        r = rule_map["FAILURE_RATE"]
         recent_statuses = (
             db.query(models.Transaction.status)
             .order_by(models.Transaction.created_at.desc())
@@ -78,12 +85,19 @@ def evaluate_transaction(
         )
         if len(recent_statuses) >= FAILURE_RATE_WINDOW:
             failure_rate = sum(1 for (s,) in recent_statuses if s == "failed") / len(recent_statuses)
-            if failure_rate >= rule_map["FAILURE_RATE"].threshold:
-                score += rule_map["FAILURE_RATE"].weight
+            fired = failure_rate >= r.threshold
+            if fired:
+                score += r.weight
                 triggered.append("FAILURE_RATE")
+            contributions.append({"rule_type": "FAILURE_RATE", "fired": fired,
+                                   "weight": r.weight, "threshold": r.threshold, "actual_value": round(failure_rate, 4)})
+        else:
+            contributions.append({"rule_type": "FAILURE_RATE", "fired": False,
+                                   "weight": r.weight, "threshold": r.threshold, "actual_value": None})
 
     # VELOCITY: 동일 계좌에서 VELOCITY_WINDOW_MINUTES 내 거래 건수
     if "VELOCITY" in rule_map:
+        r = rule_map["VELOCITY"]
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=VELOCITY_WINDOW_MINUTES)
         recent_count = (
             db.query(models.Transaction)
@@ -94,11 +108,15 @@ def evaluate_transaction(
             .count()
         )
         # 현재 거래 포함 시 임계값 이상이면 트리거
-        if recent_count + 1 >= rule_map["VELOCITY"].threshold:
-            score += rule_map["VELOCITY"].weight
+        velocity = recent_count + 1
+        fired = velocity >= r.threshold
+        if fired:
+            score += r.weight
             triggered.append("VELOCITY")
+        contributions.append({"rule_type": "VELOCITY", "fired": fired,
+                               "weight": r.weight, "threshold": r.threshold, "actual_value": float(velocity)})
 
-    return min(score, 100.0), triggered
+    return min(score, 100.0), triggered, contributions
 
 
 def risk_level(score: float) -> str:

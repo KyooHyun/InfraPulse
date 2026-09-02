@@ -15,6 +15,16 @@ class Transaction(Base):
     risk_score = Column(Float, nullable=False, default=0.0)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+    # PaySim 적재 및 ML 레이어 컬럼 (기존 거래는 모두 NULL)
+    transaction_type = Column(String(32), nullable=True)
+    balance_orig_before = Column(Float, nullable=True)
+    balance_orig_after = Column(Float, nullable=True)
+    balance_dest_before = Column(Float, nullable=True)
+    balance_dest_after = Column(Float, nullable=True)
+    is_fraud = Column(Boolean, nullable=True)        # PaySim 정답 레이블
+    ml_anomaly_score = Column(Float, nullable=True)  # Isolation Forest 이상 점수 (0~1)
+    ensemble_score = Column(Float, nullable=True)    # 룰+ML 앙상블 최종 점수 (0~100)
+
 
 class User(Base):
     __tablename__ = "users"
