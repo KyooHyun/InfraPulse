@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -36,6 +37,15 @@ class TransferRequest(BaseModel):
         if self.account_from == self.account_to:
             raise ValueError("송금 계좌와 수취 계좌가 동일합니다")
         return self
+
+
+class AccountOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    account_id: str
+    balance: Decimal
+    currency: str
+    created_at: datetime
 
 
 class TransactionOut(BaseModel):
@@ -116,7 +126,32 @@ class AuditLogOut(BaseModel):
     detail: Optional[str]
     ip_address: Optional[str]
     checksum: Optional[str]
+    prev_checksum: Optional[str] = None
+    event_time: Optional[str] = None
     created_at: datetime
+
+
+class AuditChainBreak(BaseModel):
+    id: Optional[int] = None
+    reason: str
+    detail: str
+    expected_prev_checksum: Optional[str] = None
+    stored_prev_checksum: Optional[str] = None
+    expected_checksum: Optional[str] = None
+    stored_checksum: Optional[str] = None
+    expected_head_checksum: Optional[str] = None
+    stored_head_checksum: Optional[str] = None
+
+
+class AuditChainVerification(BaseModel):
+    """감사 로그 해시 체인 검증 결과."""
+
+    status: str                       # OK | BROKEN
+    entries_total: int
+    entries_chained: int
+    entries_legacy: int               # 체인 도입 이전에 쓰인 행
+    head_checksum: Optional[str]
+    broken_at: Optional[AuditChainBreak] = None
 
 
 # ── FDS 룰 ────────────────────────────────────────────────────────────────────

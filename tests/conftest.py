@@ -5,23 +5,68 @@ scope="module": 테스트 파일(모듈)별로 독립된 SQLite DB를 사용한�
 - 모듈 시작 시 테이블을 초기화(drop→create)하여 다른 모듈의 데이터가 유입되지 않도록 격리한다.
 - 동일 모듈 내 테스트들은 DB를 공유하며 데이터가 누적된다 (의도적 설계).
 """
+import os
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from app.main import app
 from app.db import Base, get_db
 from app.fds_engine import seed_default_rules
 from app.security import get_password_hash
-from app import models
+from app import audit, models
 
 TEST_DB_URL = "sqlite:///./test.db"
 
 engine = create_engine(TEST_DB_URL, connect_args={"check_same_thread": False})
 TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+# ── SQLite에서 쓰기 트랜잭션 직렬화 ────────────────────────────────────────────
+#
+# 운영 DB는 MySQL이고, 이체는 `SELECT ... FOR UPDATE`로 계좌 행을 잠근다.
+# SQLAlchemy의 SQLite 방언은 이 구문을 **조용히 버린다** — SQLite에는 행 단위
+# 잠금이 없기 때문이다. 그래서 아무것도 하지 않으면 SQLite 테스트에서는
+# 잠금이 걸리지 않은 상태로 동시성 테스트가 돌아 "통과했지만 아무것도
+# 증명하지 못한" 테스트가 된다.
+#
+# SQLite에는 대신 DB 단위 쓰기 잠금이 있다. 문제는 pysqlite가 기본적으로
+# 트랜잭션을 지연 시작(BEGIN DEFERRED)해서, 읽기 시점에는 잠금을 잡지 않고
+# 첫 쓰기에서야 잡는다는 점이다. 이체는 "읽고 → 판단하고 → 쓰는" 연산이므로
+# 그 사이에 다른 트랜잭션이 끼어들 수 있다 — FOR UPDATE가 없는 것과 같은 상황.
+#
+# BEGIN IMMEDIATE로 트랜잭션 시작 시점에 쓰기 잠금을 잡게 하면 읽기-판단-쓰기가
+# 하나로 묶인다. MySQL의 행 잠금과 잠금 범위는 다르지만(DB 전체 vs 행),
+# "동시 이체가 같은 잔액을 두 번 읽을 수 없다"는 성질은 같다.
+#
+# 정리: MySQL에서는 FOR UPDATE가, SQLite에서는 BEGIN IMMEDIATE가 직렬화를 맡는다.
+# FOR UPDATE 구문이 실제로 SQL에 실린다는 것 자체는
+# tests/test_concurrency.py::test_lock_query_emits_for_update 가 따로 검증한다.
+
+# INFRAPULSE_TEST_NO_LOCK=1 로 이 직렬화를 꺼서 "잠금이 없으면 정말 깨지는가"를
+# 확인할 수 있다(음성 대조군). tests/test_concurrency.py 상단 주석 참고.
+SERIALIZE_WRITES = os.environ.get("INFRAPULSE_TEST_NO_LOCK") != "1"
+
+
+@event.listens_for(engine, "connect")
+def _sqlite_connect(dbapi_connection, connection_record):
+    if not SERIALIZE_WRITES:
+        return
+    # pysqlite의 암묵적 트랜잭션 관리를 끈다 — 아래 BEGIN을 직접 내기 위해서다.
+    dbapi_connection.isolation_level = None
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA busy_timeout = 10000")  # 잠금 대기 10초 (기본값 0 = 즉시 실패)
+    cursor.close()
+
+
+@event.listens_for(engine, "begin")
+def _sqlite_begin_immediate(connection):
+    if not SERIALIZE_WRITES:
+        return
+    connection.exec_driver_sql("BEGIN IMMEDIATE")
 
 
 def override_get_db():
@@ -43,6 +88,7 @@ def client():
 
     db = TestingSession()
     seed_default_rules(db)
+    audit.ensure_chain_head(db)
     db.add_all([
         models.User(
             username="admin",
@@ -90,3 +136,16 @@ def risk_auth(client):
 @pytest.fixture(scope="module")
 def staff_auth(client):
     return auth_header(client, "staff", "Staff1234!")
+
+
+@pytest.fixture
+def db_session():
+    """API를 거치지 않고 DB를 직접 건드리는 테스트용 세션.
+
+    감사 로그 위변조 탐지 테스트처럼 "정상 경로로는 불가능한 조작"을 흉내낼 때 쓴다.
+    """
+    db = TestingSession()
+    try:
+        yield db
+    finally:
+        db.close()

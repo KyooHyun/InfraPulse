@@ -20,7 +20,7 @@ from .metrics import (
     CONTENT_TYPE_LATEST,
 )
 from .security import get_password_hash
-from . import models
+from . import audit, models
 from .routers import auth, transactions, fds, compliance, kyc, admin
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,7 @@ def _initialize_db() -> None:
             try:
                 seed_default_rules(db)
                 _seed_users(db)
+                audit.ensure_chain_head(db)
                 ml_engine.load_or_train(db)
             finally:
                 db.close()

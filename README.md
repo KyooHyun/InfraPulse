@@ -59,6 +59,45 @@ JWT(HS256) 토큰 발급 및 역할 기반 접근 제어.
 | `RISK_OFFICER` | FDS 알림 검토, 컴플라이언스 보고서 제출, KYC 승인 |
 | `ADMIN` | 전체 권한 + FDS 룰 관리 + 감사 로그 조회 + 사용자 관리 |
 
+### 1-1. 이체 동시성 제어 (계좌 원장 + 행 잠금)
+
+이체는 "읽고 → 판단하고 → 쓰는" 연산이다. 잔액 10만원 계좌에 8만원 이체 두 건이
+동시에 들어오면 둘 다 "잔액 10만원"을 읽고 둘 다 통과시켜, 잔액이 음수가 되거나
+한쪽 차감이 다른 쪽 쓰기에 덮여 사라진다(lost update). 애플리케이션 레벨 `if` 문으로는
+막을 수 없다 — 두 요청 모두 자기 시점에서는 조건을 만족하기 때문이다.
+
+```python
+# app/ledger.py — 데드락 방지를 위해 항상 account_id 오름차순으로 잠근다
+for account_id in sorted(set(account_ids)):
+    db.query(models.Account).filter(...).with_for_update().one_or_none()
+```
+
+- **`SELECT ... FOR UPDATE`** 로 계좌 행에 배타 잠금. 읽기·판단·쓰기가 한 트랜잭션에
+  들어가므로 중간 상태가 다른 요청에 보이지 않는다.
+- **잠금 순서 고정**: A→B와 B→A 이체가 각자 출금 계좌부터 잠그면 서로를 기다리며
+  데드락이 된다. 출금/입금 구분 없이 계좌번호 오름차순으로 잠가 순환 대기를 없앤다.
+- **원장 금액은 `NUMERIC(18,2)`**: 이진 부동소수는 0.1을 정확히 표현하지 못해 잔액을
+  더하고 빼는 과정에서 오차가 누적된다. 합계가 맞아야 하는 테이블이므로 십진 고정소수를 쓴다.
+- **잔액 변경과 거래 기록을 한 커밋으로**: 따로 커밋하면 "잔액은 줄었는데 거래 기록이
+  없는" 상태가 존재할 수 있다.
+
+**검증** — `tests/test_concurrency.py`가 같은 계좌에 이체 12건을 동시에 던진다.
+잔액이 3건분뿐이므로 성공은 최대 3건이어야 하고, 줄어든 잔액이 성공 건수와 정확히
+일치해야 한다. 이 테스트가 의미 있다는 근거는 **꺼보면 깨진다**는 것이다:
+
+```
+$ INFRAPULSE_TEST_NO_LOCK=1 pytest tests/test_concurrency.py
+AssertionError: 잔액으로 감당 가능한 건수(3)보다 많이 성공했다: 11
+```
+
+> 마지막 숫자는 돌릴 때마다 달라진다 — 어떤 요청이 어느 시점에 잔액을 읽었는지에
+> 달렸기 때문이다. 경합 버그가 재현되지 않는다고 없는 게 아니라는 점이 여기서 보인다.
+
+> 운영 DB는 MySQL이라 `FOR UPDATE`가 실제 행 잠금으로 동작한다. 테스트용 SQLite는
+> 행 잠금이 없어 SQLAlchemy가 이 구문을 조용히 버리므로, `conftest.py`가
+> `BEGIN IMMEDIATE`로 같은 직렬화 효과를 만든다. `FOR UPDATE` 구문이 실제로 SQL에
+> 실린다는 것은 `test_lock_query_emits_for_update`가 따로 검증한다.
+
 ### 2. DB 기반 FDS 룰 엔진
 임계값·가중치를 DB에서 관리하여 서비스 재시작 없이 변경 가능.
 
@@ -74,6 +113,39 @@ JWT(HS256) 토큰 발급 및 역할 기반 접근 제어.
 - `LOW` (0~39점): 기록 및 모니터링
 - `MEDIUM` (40~69점): FDS 알림 생성, 담당자 검토 대기
 - `HIGH` (70~100점): FDS 알림 생성 + STR(의심거래보고서) 자동 생성
+
+**임계값의 근거와 알려진 결함** — 위 숫자들은 금융 상식으로 정한 판단치였다.
+`calibration/`에서 lift 측정과 IV 구간화로 근거를 확인했고(PaySim 2,770,409건),
+그 전에 데이터 없이 산수만으로 확인되는 것부터 기록해 둔다
+(`python -m calibration.reachability`).
+
+- `LOGIN_FAILURE`(20점)와 `LATENCY`(15점)는 인증 경로·미들웨어에서 처리되는 시스템
+  신호라 **거래 위험점수에 기여하지 않는다.** 룰 5개 100점처럼 보이지만 거래 한 건이
+  받을 수 있는 최대 점수는 `30+25+10 = 65점`이다.
+- 따라서 **룰만 쓰는 구성에서는 HIGH(70점)에 도달할 수 없다.** ML 앙상블을 켜면
+  상한이 82.5점이 되어 도달한다. 같은 임계값이 두 구성에서 다른 의미를 갖는다.
+- `HIGH_VALUE`가 발화하지 않으면 나머지를 다 합쳐도 35점이라 MEDIUM(40점)에 못 미친다.
+  소액으로 나눠 보내는 수법이 구조적으로 검토 대기열에서 빠진다.
+
+데이터로 확인한 것(PaySim 277만 건, TRANSFER/CASH_OUT):
+
+- **HIGH_VALUE 10만원은 임계값 곡선의 맨 바닥에 있다.** 전체 거래의 **69.8%** 에
+  발화하고 lift는 **1.14** — lift 1.0이 "아무 정보 없음"이므로 사실상 무정보 신호다.
+  곡선 위쪽(상위 0.5% 지점)에서는 lift가 20.89까지 오른다.
+- **MEDIUM/HIGH 등급에 해당하는 거래가 277만 건 중 0건이다.** 위 산수가 예측한
+  그대로다. 룰 점수 AUC는 **0.547** — 무작위(0.5)와 거의 같다.
+- 비용비를 1~200으로 흔들어도 최적 임계값이 움직이지 않고, IV 기반 경계 재설정은
+  아예 해를 찾지 못한다. 점수가 가질 수 있는 값이 {0, 30} 둘뿐이기 때문이다.
+
+측정하지 못한 것도 같이 적는다 — PaySim에는 거래 성공/실패 상태가 없어
+**FAILURE_RATE 30%는 측정 불가**이고, 송금계좌 29만 개 중 2회 이상 등장하는 것이
+20개뿐이라 **VELOCITY 5건/10분도 측정 불가**다. 그리고 PaySim의 금액 단위는 원화가
+아니므로, 위 곡선은 "현행 값이 분포의 어디에 있는가"는 말해주지만
+**"원화 10만원이 옳은가"에는 답하지 않는다.**
+
+임계값·가중치는 이번에도 바꾸지 않았다. 확인된 것은 "현행 값이 곡선 맨 아래에 있다"
+까지이고, 어디로 옮길지는 탐지 누락 비용과 검토 공수의 비율이 정한다 — 이 저장소에
+없는 숫자다. 상세: [`calibration/README.md`](calibration/README.md)
 
 ### 3. 비지도학습(Isolation Forest) 앙상블 + 성능 검증
 
@@ -103,14 +175,33 @@ hybrid_score = α × rule_score + (1-α) × if_score
 
 ### 5. 컴플라이언스 자동 보고
 - **CTR**: 1천만원 이상 거래 발생 즉시 자동 생성
-- **STR**: 위험점수 70점 이상 거래에 자동 생성
+- **STR**: 위험점수 70점 이상 거래에 자동 생성 (ML 앙상블이 켜진 구성에서만 도달 가능 —
+  판정에 쓰는 점수는 FDS 알림에 기록되는 점수와 동일하다)
 - 각 보고서에 고유 번호 부여 (`CTR-20260605-A1B2C3D4`)
 - RISK_OFFICER가 SUBMITTED 처리 (실제 환경에서는 KoFIU API 연동)
 
-### 6. 불변 감사 추적 (Audit Trail)
-모든 중요 이벤트를 `audit_logs` 테이블에 기록.  
-각 행에 **SHA-256 체크섬**을 포함해 위변조 여부 검증 가능.  
-행은 INSERT 전용이며 수정·삭제하지 않는다.
+### 6. 불변 감사 추적 (Audit Trail) — SHA-256 해시 체인
+모든 중요 이벤트를 `audit_logs` 테이블에 기록한다. 행은 INSERT 전용이다.
+
+각 행의 체크섬은 **직전 행의 체크섬을 입력에 포함**해 계산된다.
+행마다 독립적인 해시를 저장하던 이전 방식은 행 하나를 **통째로 지우면** 남은 행들이
+전부 자기 검증을 통과해 탐지되지 않았다 — 감사 추적에서 가장 흔한 은폐 수법이
+정확히 그것이다. 체인으로 엮으면 삭제·삽입·재배열이 연결 고리를 끊는다.
+
+| 조작 | 탐지 신호 |
+|------|----------|
+| 행 내용 수정 | `CHECKSUM_MISMATCH` — 다시 계산한 해시가 저장값과 다르다 |
+| 중간 행 삭제·삽입·순서 변경 | `BROKEN_LINK` — 다음 행의 `prev_checksum`이 이웃과 안 맞는다 |
+| 마지막 행 삭제 | `HEAD_MISMATCH` — `audit_chain_head`에 보관한 머리 해시와 어긋난다 |
+
+해시 입력에 `detail`과 `ip_address`도 포함한다. 이전 구현은 이 둘을 빼고 해시해서
+"누가 무엇을 했는지"가 적힌 `detail`을 고쳐도 체크섬이 그대로였다.
+
+검증: `GET /admin/audit-logs/verify` (ADMIN)
+
+**한계** — 체인은 위변조를 *탐지*할 뿐 *막지는* 못한다. DB 쓰기 권한자는 행을 지운 뒤
+이후 행 전부와 머리 해시를 다시 계산해 넣을 수 있다. 그것까지 막으려면 머리 해시를
+주기적으로 외부(다른 권한 도메인)에 고정해야 한다.
 
 ### 7. KYC 고객확인
 - 계좌별 신원 정보 등록 (원문 식별번호 비저장, 마스킹값만 보관)
@@ -127,8 +218,9 @@ Swagger UI: **http://localhost:8000/docs**
 |--------|------|------|----------|
 | `POST` | `/auth/token` | JWT 토큰 발급 | 없음 |
 | `GET` | `/auth/me` | 내 계정 정보 | 모든 사용자 |
-| `POST` | `/transactions/transfer` | 계좌 이체 | STAFF |
+| `POST` | `/transactions/transfer` | 계좌 이체 (계좌 행 잠금 + 잔액 검증) | STAFF |
 | `GET` | `/transactions` | 거래 목록 | STAFF |
+| `GET` | `/transactions/accounts/{account_id}` | 계좌 잔액 조회 | STAFF |
 | `GET` | `/fds/alerts` | FDS 알림 목록 | RISK_OFFICER |
 | `GET` | `/fds/alerts/{id}` | FDS 알림 상세 | RISK_OFFICER |
 | `POST` | `/fds/alerts/{id}/review` | 알림 검토 (승인/기각) | RISK_OFFICER |
@@ -145,6 +237,7 @@ Swagger UI: **http://localhost:8000/docs**
 | `GET` | `/admin/users` | 사용자 목록 | ADMIN |
 | `PUT` | `/admin/users/{id}/deactivate` | 사용자 비활성화 | ADMIN |
 | `GET` | `/admin/audit-logs` | 감사 로그 조회 | ADMIN |
+| `GET` | `/admin/audit-logs/verify` | 감사 로그 해시 체인 검증 | ADMIN |
 | `GET` | `/health` | 헬스체크 | 없음 |
 | `GET` | `/metrics` | Prometheus 메트릭 | 없음 |
 
@@ -154,9 +247,11 @@ Swagger UI: **http://localhost:8000/docs**
 
 | 테이블 | 설명 |
 |--------|------|
-| `transactions` | 거래 내역 (risk_score 포함) |
+| `accounts` | 계좌 원장 — 잔액 `NUMERIC(18,2)` (이체 시 실제로 증감) |
+| `transactions` | 거래 내역 (risk_score, 이체 전후 잔액 포함) |
 | `users` | 사용자 계정 (RBAC) |
-| `audit_logs` | 불변 감사 추적 (SHA-256 체크섬) |
+| `audit_logs` | 불변 감사 추적 (SHA-256 해시 체인) |
+| `audit_chain_head` | 감사 체인 머리 해시 — 꼬리 삭제 탐지 + 기록 직렬화 지점 |
 | `fds_rules` | FDS 탐지 룰 (DB 기반 관리) |
 | `fds_alerts` | FDS 이상거래 알림 |
 | `fds_decisions` | 알림 검토 결정 이력 |
@@ -222,9 +317,15 @@ pip install pytest
 pytest tests/ -q
 ```
 
-현재 환경에서 실행한 결과: **44 passed** (68 warnings)
+현재 환경에서 실행한 결과: **80 passed**
 
-테스트 범위: 인증/RBAC, 거래 생성, FDS 알림 검토, 컴플라이언스 보고, KYC — 총 **30개 이상** 테스트 케이스
+| 파일 | 건수 | 범위 |
+|---|---:|---|
+| `test_concurrency.py` | 6 | 이체 행 잠금 — 초과 인출·금액 보존·잠금 순서 |
+| `test_audit_chain.py` | 12 | 감사 해시 체인 — 수정·중간 삭제·꼬리 삭제 탐지 |
+| `test_calibration.py` | 18 | lift/AUC/IV 지표, 룰 신호 생성, 점수 도달 가능성 |
+| `test_fds.py` | 15 | FDS 룰 엔진·위험점수·알림 |
+| `test_kyc.py` / `test_transactions.py` / `test_auth.py` / `test_compliance.py` | 29 | KYC, 거래, 인증·RBAC, STR/CTR |
 
 ---
 
