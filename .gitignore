@@ -37,3 +37,6 @@ frontend/dist/
 # Kaggle API 키 — 절대 커밋하지 않는다
 kaggle.json
 evaluation/data/
+
+# 캘리브레이션 산출물 — 데이터셋에서 재생성되므로 커밋하지 않는다
+calibration/outputs/
