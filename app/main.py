@@ -3,13 +3,13 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.exc import OperationalError
 
 from .config import settings
 from .db import Base, engine, SessionLocal
 from .fds_engine import seed_default_rules
-from . import ml_engine
 from .metrics import (
     anomaly_event_total,
     anomaly_latency_total,
@@ -19,7 +19,7 @@ from .metrics import (
     CONTENT_TYPE_LATEST,
 )
 from .security import get_password_hash
-from . import models
+from . import audit, models
 from .routers import auth, transactions, fds, compliance, kyc, admin
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ def _initialize_db() -> None:
             try:
                 seed_default_rules(db)
                 _seed_users(db)
-                ml_engine.load_or_train(db)
+                audit.ensure_chain_head(db)
             finally:
                 db.close()
             logger.info("Database initialized")

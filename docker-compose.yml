@@ -34,7 +34,7 @@ services:
     environment:
       - API_BASE_URL=http://transaction-api:8000
       - SIMULATOR_INTERVAL=15
-      - SIMULATOR_HIGH_VALUE_THRESHOLD=100000
+      - SIMULATOR_HIGH_VALUE_THRESHOLD=827513
       - SIMULATOR_USER=admin
       - SIMULATOR_PASSWORD=Admin1234!
       - SIMULATOR_LOGIN_FAIL_USER=simuser
@@ -82,6 +82,16 @@ services:
       - "3000:3000"
     depends_on:
       - prometheus
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: finops-frontend
+    ports:
+      - "3001:80"
+    depends_on:
+      - transaction-api
 
 volumes:
   mysql_data:

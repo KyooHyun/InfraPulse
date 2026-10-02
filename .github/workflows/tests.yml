@@ -1,0 +1,53 @@
+# 테스트를 두 DB에서 돌린다.
+#   sqlite — 빠른 기본 실행 (Docker 불필요)
+#   mysql  — 같은 테스트를 Testcontainers MySQL 8.0에서. FOR UPDATE 행 잠금, 유니크 제약 경합, 데드락처럼
+#            SQLite가 흉내만 내는 동작과, SQLite에서는 드러나지 않던 FLOAT 금액 잘림 같은 버그를 잡는다.
+# Python은 운영 이미지(Dockerfile)와 같은 3.11.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    name: pytest (${{ matrix.db }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [sqlite, mysql]
+    env:
+      FDS_TEST_DB: ${{ matrix.db }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: app/requirements.txt
+      - name: Install
+        run: |
+          pip install -r app/requirements.txt
+          pip install pytest httpx "testcontainers[mysql]"
+      - name: Pull MySQL image
+        if: matrix.db == 'mysql'
+        run: docker pull mysql:8.0
+      - name: Test
+        run: pytest tests/ -q
+
+  frontend:
+    name: frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build

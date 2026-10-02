@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ── 거래 ──────────────────────────────────────────────────────────────────────
@@ -14,12 +15,15 @@ _ALLOWED_CURRENCIES = {"KRW", "USD", "EUR", "JPY"}
 class TransferRequest(BaseModel):
     account_from: str
     account_to: str
-    amount: float
+    # 금액은 Decimal로 받는다 — JSON 숫자를 float로 거치지 않고 십진수로 파싱한다.
+    # 소수 둘째 자리를 넘는 금액(100.005)은 거부한다. 예전에는 float로 받아 원장 쪽에서 조용히
+    # 반올림(100.01)했고, 거래 기록에는 반올림 전 값이 들어가 DB가 따로 반올림해 둘이 어긋날 수 있었다.
+    amount: Decimal = Field(max_digits=18, decimal_places=2)
     currency: str = "KRW"
 
     @field_validator("amount")
     @classmethod
-    def amount_positive(cls, v: float) -> float:
+    def amount_positive(cls, v: Decimal) -> Decimal:
         if v <= 0:
             raise ValueError("거래 금액은 0보다 커야 합니다")
         return v
@@ -38,6 +42,15 @@ class TransferRequest(BaseModel):
         return self
 
 
+class AccountOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    account_id: str
+    balance: Decimal
+    currency: str
+    created_at: datetime
+
+
 class TransactionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -50,6 +63,8 @@ class TransactionOut(BaseModel):
     reason: Optional[str]
     risk_score: float
     created_at: datetime
+    ml_anomaly_score: Optional[float] = None
+    ensemble_score: Optional[float] = None
 
 
 # ── 인증 ──────────────────────────────────────────────────────────────────────
@@ -114,7 +129,32 @@ class AuditLogOut(BaseModel):
     detail: Optional[str]
     ip_address: Optional[str]
     checksum: Optional[str]
+    prev_checksum: Optional[str] = None
+    event_time: Optional[str] = None
     created_at: datetime
+
+
+class AuditChainBreak(BaseModel):
+    id: Optional[int] = None
+    reason: str
+    detail: str
+    expected_prev_checksum: Optional[str] = None
+    stored_prev_checksum: Optional[str] = None
+    expected_checksum: Optional[str] = None
+    stored_checksum: Optional[str] = None
+    expected_head_checksum: Optional[str] = None
+    stored_head_checksum: Optional[str] = None
+
+
+class AuditChainVerification(BaseModel):
+    """감사 로그 해시 체인 검증 결과."""
+
+    status: str                       # OK | BROKEN
+    entries_total: int
+    entries_chained: int
+    entries_legacy: int               # 체인 도입 이전에 쓰인 행
+    head_checksum: Optional[str]
+    broken_at: Optional[AuditChainBreak] = None
 
 
 # ── FDS 룰 ────────────────────────────────────────────────────────────────────
@@ -194,6 +234,25 @@ class FdsDecisionOut(BaseModel):
 
 # ── 컴플라이언스 보고서 ────────────────────────────────────────────────────────
 
+class ComplianceReviewCreate(BaseModel):
+    decision: str  # APPROVE(보고 대상) | DISMISS(보고 불필요)
+    comment: str   # 판단 근거 — 의심거래 판단은 사유가 남아야 한다
+
+    @field_validator("decision")
+    @classmethod
+    def valid_decision(cls, v: str) -> str:
+        if v not in ("APPROVE", "DISMISS"):
+            raise ValueError("decision은 APPROVE 또는 DISMISS")
+        return v
+
+    @field_validator("comment")
+    @classmethod
+    def non_empty_comment(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("검토 사유는 비워둘 수 없습니다")
+        return v
+
+
 class ComplianceReportOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -208,6 +267,9 @@ class ComplianceReportOut(BaseModel):
     status: str
     report_number: str
     created_at: datetime
+    reviewed_at: Optional[datetime]
+    reviewed_by: Optional[int]
+    review_reason: Optional[str]
     submitted_at: Optional[datetime]
 
 
@@ -233,7 +295,6 @@ class FdsStatsOut(BaseModel):
 
     # 컴플라이언스 보고서
     str_total: int
-    ctr_total: int
     pending_compliance: int
 
     # 룰 커버리지 — 활성 룰 중 실제 알림을 발생시킨 룰 유형 비율

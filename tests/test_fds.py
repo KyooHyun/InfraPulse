@@ -1,14 +1,20 @@
 """FDS 알림 검토, 룰 관리, 운영 통계 테스트."""
+from itertools import count
+
+_recipients = count(1)
 
 
 def _create_high_value_alert(client, staff_auth) -> None:
-    """
-    HIGH_VALUE 룰(기본 임계값 100,000원)을 확실히 트리거하는 이체를 실행한다.
-    500,000원은 임계값의 5배이므로 랜덤 실패율과 무관하게 항상 알림이 생성된다.
+    """MEDIUM(40점) 이상이 되어 알림이 생기는 이체를 실행한다.
+
+    200만 원 → HIGH_VALUE(20) + HIGH_VALUE_TOP(10), 처음 보는 수취인 → NEW_RECIPIENT(10) = 40점.
+    알림은 MEDIUM 이상에서만 생기므로 금액 룰 하나로는 부족하다. 점수는 이체 전에 매기므로
+    무작위 실패와 무관하게 알림이 생긴다.
     """
     resp = client.post(
         "/transactions/transfer",
-        json={"account_from": "ACC-FDS1", "account_to": "ACC-FDS2", "amount": 500_000, "currency": "KRW"},
+        json={"account_from": "ACC-FDS1", "account_to": f"ACC-FDS-NEW{next(_recipients)}",
+              "amount": 2_000_000, "currency": "KRW"},
         headers=staff_auth,
     )
     assert resp.status_code == 201, f"이체 실패: {resp.json()}"
@@ -123,8 +129,11 @@ def test_list_rules_as_admin(client, admin_auth):
     rules = resp.json()
     assert len(rules) > 0
     condition_types = {r["condition_type"] for r in rules}
-    # 5개 룰 유형이 모두 시드되어 있어야 한다
-    assert {"HIGH_VALUE", "FAILURE_RATE", "VELOCITY", "LOGIN_FAILURE", "LATENCY"} == condition_types
+    # 거래 룰 6종 + 시스템 신호 3종이 모두 시드되어 있어야 한다
+    assert condition_types == {
+        "HIGH_VALUE", "HIGH_VALUE_TOP", "BALANCE_DRAIN", "DEST_EMPTY", "NEW_RECIPIENT", "VELOCITY",
+        "FAILURE_RATE", "LOGIN_FAILURE", "LATENCY",
+    }
 
 
 def test_list_rules_forbidden_for_risk_officer(client, risk_auth):
@@ -148,7 +157,7 @@ def test_update_rule_threshold(client, admin_auth):
     # 원래 값으로 복구
     client.put(
         f"/fds/rules/{high_value_rule['id']}",
-        json={"threshold": 100_000.0},
+        json={"threshold": high_value_rule["threshold"]},
         headers=admin_auth,
     )
 
@@ -167,7 +176,7 @@ def test_stats_structure(client, risk_auth, staff_auth):
         "total_alerts", "pending_review", "detection_rate_pct",
         "false_positive_rate_pct", "alerts_by_rule",
         "avg_risk_score", "high_risk_count", "high_risk_rate_pct",
-        "str_total", "ctr_total", "pending_compliance",
+        "str_total", "pending_compliance",
         "active_rule_count", "triggered_rule_types", "rule_coverage_pct",
     }
     assert required_fields <= body.keys()
@@ -195,3 +204,10 @@ def test_stats_rule_coverage_after_high_value(client, risk_auth, staff_auth):
 def test_stats_forbidden_for_staff(client, staff_auth):
     resp = client.get("/fds/stats", headers=staff_auth)
     assert resp.status_code == 403
+
+
+def test_comparison_pending_until_remeasured(client, risk_auth):
+    """철회된 비교 결과 대신 재측정 대기 상태를 200으로 알린다 (503은 장애로 집계된다)."""
+    resp = client.get("/fds/comparison", headers=risk_auth)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "pending"

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..security import require_role, get_password_hash
-from ..schemas import UserCreate, UserOut, AuditLogOut
+from ..schemas import AuditChainVerification, UserCreate, UserOut, AuditLogOut
 from .. import models, audit
 
 router = APIRouter(prefix="/admin", tags=["관리자"])
@@ -95,3 +95,21 @@ def list_audit_logs(
         .limit(limit)
         .all()
     )
+
+
+@router.get(
+    "/audit-logs/verify",
+    response_model=AuditChainVerification,
+    summary="감사 로그 해시 체인 검증",
+)
+def verify_audit_chain(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_role("ADMIN")),
+):
+    """감사 로그가 기록된 이후 수정·삭제되지 않았음을 해시 체인으로 확인한다.
+
+    status가 BROKEN이면 broken_at이 어느 행에서 무엇이 어긋났는지 알려준다.
+    이 엔드포인트 자체는 감사 로그를 남기지 않는다 — 검증이 검증 대상을 늘리면
+    체인이 계속 자라 같은 결과를 두 번 확인할 수 없다.
+    """
+    return audit.verify_chain(db)

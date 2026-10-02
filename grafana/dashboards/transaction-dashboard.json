@@ -49,17 +49,10 @@
     },
     {
       "type": "stat",
-      "title": "STR (의심거래보고)",
-      "gridPos": {"x": 12, "y": 4, "w": 6, "h": 4},
+      "title": "STR 초안 (의심거래보고)",
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 4},
       "targets": [{"expr": "compliance_report_total{report_type=\"STR\"}", "refId": "A"}],
       "options": {"colorMode": "value", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}
-    },
-    {
-      "type": "stat",
-      "title": "CTR (고액현금거래보고)",
-      "gridPos": {"x": 18, "y": 4, "w": 6, "h": 4},
-      "targets": [{"expr": "compliance_report_total{report_type=\"CTR\"}", "refId": "A"}],
-      "options": {"colorMode": "value"}
     },
     {
       "type": "timeseries",
@@ -100,11 +93,10 @@
     },
     {
       "type": "timeseries",
-      "title": "컴플라이언스 보고서 누적 (STR / CTR)",
+      "title": "STR 초안 누적",
       "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
       "targets": [
-        {"expr": "compliance_report_total{report_type=\"STR\"}", "legendFormat": "STR", "refId": "A"},
-        {"expr": "compliance_report_total{report_type=\"CTR\"}", "legendFormat": "CTR", "refId": "B"}
+        {"expr": "compliance_report_total{report_type=\"STR\"}", "legendFormat": "STR", "refId": "A"}
       ]
     }
   ]
