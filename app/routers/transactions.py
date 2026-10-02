@@ -21,23 +21,27 @@ from ..metrics import (
     transaction_total,
 )
 from ..schemas import AccountOut, TransactionOut, TransferRequest
+from ..config import settings
 from ..security import get_current_user
 from .. import models, audit
 
-# sklearn/numpy가 설치된 환경에서만 ML 레이어 활성화
-# Docker 컨테이너(requirements.txt 설치 후)에서는 항상 활성화됨
+logger = logging.getLogger(__name__)
+
+# ML 레이어는 FDS_ML_ENABLED=true일 때만 켠다 (app/config.py 참고).
+# 켜져 있는데 모델 파일이나 sklearn이 없으면 조용히 넘어가지 않고 경고를 남긴다.
 _ML_AVAILABLE = False
 _if_model = None
-try:
-    from ..ml.isolation_forest import IFModel
-    from ..ml.features import extract_features
-    from ..ml.ensemble import ensemble_score as compute_ensemble
-    _if_model = IFModel.load()  # 모델 아티팩트 없으면 None
-    _ML_AVAILABLE = True
-except ImportError:
-    pass
-
-logger = logging.getLogger(__name__)
+if settings.fds_ml_enabled:
+    try:
+        from ..ml.isolation_forest import IFModel
+        from ..ml.features import extract_features
+        from ..ml.ensemble import ensemble_score as compute_ensemble
+        _if_model = IFModel.load()  # 모델 아티팩트 없으면 None
+        _ML_AVAILABLE = True
+        if _if_model is None:
+            logger.warning("FDS_ML_ENABLED=true지만 모델 파일이 없다 — 룰 점수만 사용한다")
+    except ImportError:
+        logger.warning("FDS_ML_ENABLED=true지만 ML 의존성이 없다 — 룰 점수만 사용한다")
 
 router = APIRouter(prefix="/transactions", tags=["거래"])
 
