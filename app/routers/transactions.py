@@ -191,6 +191,9 @@ def transfer(
             db, req, tx_status, reason,
             risk_score=risk_score, balances=balances, commit=False,
         )
+        if tx_status == "success":
+            # 잔액을 옮긴 근거를 복식부기로 남긴다 — 잔액 변경·거래 기록과 같은 커밋.
+            ledger.post_transfer(db, transaction, amount)
         if idempotency_key:
             # 잔액 변경·거래 기록·키가 한 커밋으로 묶인다 — 셋 중 일부만 남는 상태가 없다.
             idempotency.record(db, current_user.id, idempotency_key, req_hash, transaction)

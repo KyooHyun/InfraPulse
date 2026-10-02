@@ -36,6 +36,9 @@ from . import models
 # 데모 시스템이라 계좌 개설 API가 따로 없다. 처음 등장한 계좌번호는 이 잔액으로 개설한다.
 DEFAULT_OPENING_BALANCE = Decimal("100000000.00")
 
+# 개설 잔액의 상대 계정. accounts 테이블에 없는 시스템 계정이라 잔액 대사 대상이 아니다.
+OPENING_EQUITY_ACCOUNT = "SYS-OPENING-EQUITY"
+
 CENT = Decimal("0.01")
 
 
@@ -80,6 +83,12 @@ def ensure_accounts(db: Session, account_ids: Iterable[str], currency: str = "KR
                 currency=currency,
             )
         )
+        # 개설 잔액도 분개로 남긴다 — 그래야 "잔액 = 엔트리 누적"이 개설 시점부터 성립한다.
+        # 계좌 행과 같은 커밋이라, 동시 개설로 롤백되면 분개도 함께 사라진다.
+        post_journal(db, f"OPEN-{account_id}", [
+            (OPENING_EQUITY_ACCOUNT, -DEFAULT_OPENING_BALANCE),
+            (account_id, DEFAULT_OPENING_BALANCE),
+        ], currency)
         try:
             db.commit()
         except IntegrityError:
@@ -134,6 +143,34 @@ def apply_transfer(
         "balance_dest_before": receiver_before,
         "balance_dest_after": Decimal(receiver.balance),
     }
+
+
+def post_journal(
+    db: Session,
+    journal_id: str,
+    legs: List[tuple],
+    currency: str = "KRW",
+    transaction_id: int | None = None,
+) -> None:
+    """분개 하나를 추가한다(커밋은 호출자). legs = [(계좌, 금액), ...], 금액 합은 0이어야 한다.
+
+    합이 0이 아닌 분개는 여기서 거부한다 — 대사 배치는 사후 검사이고, 이것은 기록 시점의 검사다.
+    """
+    if sum((Decimal(amount) for _, amount in legs), Decimal("0")) != 0:
+        raise ValueError(f"분개 {journal_id}의 차변·대변 합이 0이 아니다: {legs}")
+    for account_id, amount in legs:
+        db.add(models.LedgerEntry(
+            journal_id=journal_id, account_id=account_id, amount=Decimal(amount),
+            currency=currency, transaction_id=transaction_id,
+        ))
+
+
+def post_transfer(db: Session, transaction: models.Transaction, amount: Decimal) -> None:
+    """성공한 이체의 분개 — 출금 계좌 −금액, 입금 계좌 +금액. 잔액 변경과 같은 커밋에 들어간다."""
+    post_journal(db, f"TX-{transaction.id}", [
+        (transaction.account_from, -amount),
+        (transaction.account_to, amount),
+    ], transaction.currency, transaction.id)
 
 
 def total_balance(db: Session) -> Decimal:
