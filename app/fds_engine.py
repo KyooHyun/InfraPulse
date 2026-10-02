@@ -4,7 +4,7 @@
 위험점수(Risk Score)는 0~100 범위로 산정되며, 점수에 따라 조치 수준이 결정된다:
   0~39  LOW    — 기록 및 모니터링
   40~69 MEDIUM — FDS 알림 생성, 담당자 검토 대기
-  70~100 HIGH  — FDS 알림 생성 + STR(의심거래보고서) 자동 생성
+  70~100 HIGH  — FDS 알림 생성 + STR(의심거래보고서) 초안 생성 → 담당자 검토
 """
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Tuple

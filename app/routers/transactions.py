@@ -182,7 +182,7 @@ def transfer(
 
     risk_score_histogram.observe(risk_score)
 
-    # 5. 고위험(70점 이상) → STR 자동 생성
+    # 5. 고위험(70점 이상) → STR 초안 생성 (제출 여부는 담당자 검토로 결정)
     if effective_score >= RISK_LEVEL_HIGH:
         create_str(
             db, transaction,

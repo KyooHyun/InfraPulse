@@ -23,7 +23,7 @@
                   ┌─────────────────────────────────────┐
                   │         transaction-api              │
                   │  FastAPI  │  FDS Engine  │  Reports  │
-                  │  JWT/RBAC │  Rule + IF   │    STR    │
+                  │  JWT/RBAC │  Rule + IF   │ STR 초안  │
                   └────┬──────────────┬──────────────────┘
                        │              │
               ┌────────▼──┐    ┌──────▼──────┐
@@ -112,7 +112,7 @@ AssertionError: 잔액으로 감당 가능한 건수(3)보다 많이 성공했�
 **위험 등급:**
 - `LOW` (0~39점): 기록 및 모니터링
 - `MEDIUM` (40~69점): FDS 알림 생성, 담당자 검토 대기
-- `HIGH` (70~100점): FDS 알림 생성 + STR(의심거래보고서) 자동 생성
+- `HIGH` (70~100점): FDS 알림 생성 + STR(의심거래보고서) 초안 생성 → 담당자 검토
 
 **임계값의 근거와 알려진 결함** — 위 숫자들은 금융 상식으로 정한 판단치였다.
 `calibration/`에서 lift 측정과 IV 구간화로 근거를 확인했고(PaySim 2,770,409건),
@@ -173,15 +173,23 @@ hybrid_score = α × rule_score + (1-α) × if_score
 이상 감지 → DETECTED → (담당자 검토) → APPROVED(정상) / REJECTED(이상거래 확정)
 ```
 
-### 5. 컴플라이언스 자동 보고
-- **STR**: 위험점수 70점 이상 거래에 자동 생성 (ML 앙상블이 켜진 구성에서만 도달 가능 —
-  판정에 쓰는 점수는 FDS 알림에 기록되는 점수와 동일하다)
+### 5. 컴플라이언스 보고 (STR 초안 → 담당자 판단 → 제출)
+```
+위험점수 70점 이상 → DRAFT → (RISK_OFFICER 검토, 사유 필수) → APPROVED → SUBMITTED
+                                                             └→ DISMISSED (보고 불필요)
+```
+- **STR**: 특금법 제4조의 요건은 "의심되는 합당한 근거"에 대한 **사람의 판단**이다. 그래서
+  점수로는 초안만 만들고, 제출은 검토에서 APPROVED된 건만 할 수 있다. 검토자와 판단 사유는
+  해시 체인 감사 로그에 남는다(`REVIEW_STR_APPROVE` / `REVIEW_STR_DISMISS`).
+  70점은 ML 앙상블이 켜진 구성에서만 도달할 수 있다(2절 참고).
 - **CTR — 미구현**: CTR 대상은 **현금** 입출금이고, 기준은 **동일인 1거래일 합산** 1천만원
   이상이다. 이 시스템에는 계좌이체만 있고 계좌를 고객 단위로 묶는 식별자도 없다. 예전에는
   이체 한 건이 1천만원 이상이면 CTR을 만들었는데, 제도와 다른 동작이라 제거했다. 현금 거래
   유형과 고객 식별자(KYC ↔ 계좌)를 추가할 때 구현한다.
-- 각 보고서에 고유 번호 부여 (`STR-20260605-A1B2C3D4`)
-- RISK_OFFICER가 SUBMITTED 처리 (실제 환경에서는 KoFIU API 연동)
+- 각 보고서에 고유 번호 부여 (`STR-20260605-A1B2C3D4`). 실제 환경에서는 제출이 KoFIU API 연동으로 대체된다.
+- 상태값 변경(PENDING → DRAFT) 이전에 만든 DB가 있다면
+  [`scripts/migrations/2026-10-03_str_draft_status.sql`](scripts/migrations/2026-10-03_str_draft_status.sql)을
+  한 번 실행한다. 기존 PENDING STR은 DRAFT로 되돌리고, 이체로 생성됐던 CTR은 지우지 않고 DISMISSED로 종결한다.
 
 ### 6. 불변 감사 추적 (Audit Trail) — SHA-256 해시 체인
 모든 중요 이벤트를 `audit_logs` 테이블에 기록한다. 행은 INSERT 전용이다.
@@ -231,7 +239,8 @@ Swagger UI: **http://localhost:8000/docs**
 | `GET` | `/fds/rules` | FDS 룰 목록 | ADMIN |
 | `PUT` | `/fds/rules/{id}` | FDS 룰 수정 | ADMIN |
 | `GET` | `/compliance/reports` | STR 보고서 목록 | RISK_OFFICER |
-| `POST` | `/compliance/reports/{id}/submit` | 보고서 제출 처리 | RISK_OFFICER |
+| `POST` | `/compliance/reports/{id}/review` | 초안 검토 — 보고 대상(APPROVE) / 불필요(DISMISS), 사유 필수 | RISK_OFFICER |
+| `POST` | `/compliance/reports/{id}/submit` | 승인된 보고서 제출 처리 | RISK_OFFICER |
 | `POST` | `/kyc` | KYC 등록 | STAFF |
 | `GET` | `/kyc/{account_id}` | KYC 조회 | RISK_OFFICER |
 | `PUT` | `/kyc/{account_id}/verify` | KYC 승인 | RISK_OFFICER |
@@ -258,7 +267,7 @@ Swagger UI: **http://localhost:8000/docs**
 | `fds_rules` | FDS 탐지 룰 (DB 기반 관리) |
 | `fds_alerts` | FDS 이상거래 알림 |
 | `fds_decisions` | 알림 검토 결정 이력 |
-| `compliance_reports` | STR 보고서 |
+| `compliance_reports` | STR 보고서 (DRAFT → APPROVED/DISMISSED → SUBMITTED) |
 | `kyc_records` | 고객확인 정보 |
 
 ---
@@ -346,7 +355,7 @@ Grafana 로그인: `admin` / `admin`
 포함 패널:
 - 총 거래 건수 / 실패 건수 / FDS 알림 / 로그인 실패
 - 고액거래·로그인 실패 이상징후
-- STR 보고서 건수
+- STR 초안 건수
 - FDS 알림 유형별 추이 (timeseries)
 - 거래 위험점수 분포 (p50 / p95)
 - API 응답 시간 (p95)

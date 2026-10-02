@@ -1,7 +1,9 @@
-"""컴플라이언스 보고서 자동 생성 유틸리티.
+"""컴플라이언스 보고서 초안 생성 유틸리티.
 
 특정금융정보법(특금법) 기반:
-  STR (의심거래보고) — FDS 고위험 거래 보고
+  STR (의심거래보고) — FDS 고위험 거래에 **초안**을 만든다. 보고 여부는 담당자가
+      판단한다(특금법 제4조: "의심되는 합당한 근거가 있는 경우"). 점수만으로 자동
+      제출하지 않는다. 흐름: DRAFT → (검토) APPROVED | DISMISSED → APPROVED만 SUBMITTED.
   CTR (고액현금거래보고) — 이 시스템에서는 생성하지 않는다. CTR 대상은 **현금**
       입출금이고 **동일인 1거래일 합산** 1천만원 이상이다(제4조의2). 지금은 계좌이체만
       있고 계좌를 고객 단위로 묶는 식별자도 없어서, 현금 거래 유형과 고객 식별자가
@@ -28,7 +30,7 @@ def create_str(
     tx: models.Transaction,
     reason: str,
 ) -> models.ComplianceReport:
-    """FDS 고위험 거래에 대해 STR을 생성한다. 동일 거래에 중복 생성하지 않는다."""
+    """FDS 고위험 거래에 STR 초안(DRAFT)을 만든다. 동일 거래에 중복 생성하지 않는다."""
     existing = (
         db.query(models.ComplianceReport)
         .filter(
@@ -48,6 +50,7 @@ def create_str(
         amount=tx.amount,
         currency=tx.currency,
         reason=reason,
+        status="DRAFT",
         report_number=_report_number("STR"),
     )
     db.add(report)

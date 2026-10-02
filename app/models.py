@@ -156,7 +156,7 @@ class ComplianceReport(Base):
     amount = Column(Float, nullable=False)
     currency = Column(String(8), nullable=False)
     reason = Column(Text, nullable=True)
-    status = Column(String(32), nullable=False, default="PENDING")  # PENDING | SUBMITTED | ACKNOWLEDGED
+    status = Column(String(32), nullable=False, default="DRAFT")  # DRAFT | APPROVED | DISMISSED | SUBMITTED
     report_number = Column(String(64), unique=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     submitted_at = Column(DateTime(timezone=True), nullable=True)

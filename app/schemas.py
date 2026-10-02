@@ -231,6 +231,25 @@ class FdsDecisionOut(BaseModel):
 
 # ── 컴플라이언스 보고서 ────────────────────────────────────────────────────────
 
+class ComplianceReviewCreate(BaseModel):
+    decision: str  # APPROVE(보고 대상) | DISMISS(보고 불필요)
+    comment: str   # 판단 근거 — 의심거래 판단은 사유가 남아야 한다
+
+    @field_validator("decision")
+    @classmethod
+    def valid_decision(cls, v: str) -> str:
+        if v not in ("APPROVE", "DISMISS"):
+            raise ValueError("decision은 APPROVE 또는 DISMISS")
+        return v
+
+    @field_validator("comment")
+    @classmethod
+    def non_empty_comment(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("검토 사유는 비워둘 수 없습니다")
+        return v
+
+
 class ComplianceReportOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

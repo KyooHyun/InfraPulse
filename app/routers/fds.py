@@ -188,7 +188,7 @@ def get_stats(
         models.ComplianceReport.report_type == "STR"
     ).count()
     pending_compliance = db.query(models.ComplianceReport).filter(
-        models.ComplianceReport.status == "PENDING"
+        models.ComplianceReport.status == "DRAFT"
     ).count()
 
     # 룰 커버리지: 활성 룰 수 vs 실제 알림이 발생한 룰 유형 수

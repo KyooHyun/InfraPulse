@@ -9,6 +9,13 @@ function fmtAmt(amount) {
   return amount?.toLocaleString('ko-KR') + ' 원'
 }
 
+const STATUS_INFO = {
+  DRAFT: { label: '검토 대기', badge: 'badge-warning' },
+  APPROVED: { label: '제출 대기', badge: 'badge-info' },
+  DISMISSED: { label: '보고 불필요', badge: 'badge-gray' },
+  SUBMITTED: { label: '제출 완료', badge: 'badge-success' },
+}
+
 const TYPE_INFO = {
   STR: {
     label: 'STR',
@@ -39,6 +46,27 @@ export default function Compliance({ user }) {
 
   useEffect(() => { load() }, [load])
 
+  async function handleReview(id, decision) {
+    const comment = window.prompt(
+      decision === 'APPROVE' ? '보고 대상으로 판단한 근거를 입력하세요' : '보고 불필요로 판단한 근거를 입력하세요'
+    )
+    if (!comment || !comment.trim()) return
+    setSubmitting(id)
+    setMsg(null)
+    try {
+      await apiFetch(`/compliance/reports/${id}/review`, {
+        method: 'POST',
+        body: JSON.stringify({ decision, comment }),
+      })
+      setMsg({ type: 'success', text: `보고서 #${id} — ${decision === 'APPROVE' ? '보고 대상으로 승인' : '보고 불필요로 종결'}` })
+      load()
+    } catch (err) {
+      setMsg({ type: 'error', text: err.message })
+    } finally {
+      setSubmitting(null)
+    }
+  }
+
   async function handleSubmit(id) {
     setSubmitting(id)
     setMsg(null)
@@ -54,7 +82,8 @@ export default function Compliance({ user }) {
   }
 
   const strCount = reports.filter(r => r.report_type === 'STR').length
-  const pendingCount = reports.filter(r => r.status === 'PENDING').length
+  const draftCount = reports.filter(r => r.status === 'DRAFT').length
+  const approvedCount = reports.filter(r => r.status === 'APPROVED').length
 
   return (
     <div className="container">
@@ -74,8 +103,12 @@ export default function Compliance({ user }) {
           <div className="stat-value">{strCount}</div>
         </div>
         <div className="stat-card amber">
+          <div className="stat-label">검토 대기</div>
+          <div className="stat-value">{draftCount}</div>
+        </div>
+        <div className="stat-card">
           <div className="stat-label">제출 대기</div>
-          <div className="stat-value">{pendingCount}</div>
+          <div className="stat-value">{approvedCount}</div>
         </div>
       </div>
 
@@ -89,13 +122,13 @@ export default function Compliance({ user }) {
         </div>
 
         <div style={{ padding: '10px 0 14px', fontSize: 12, color: '#64748b', display: 'flex', gap: 24 }}>
-          <span>🔴 <b>STR</b> — 위험점수 70 이상 의심거래 보고 (특금법 제4조)</span>
+          <span>🔴 <b>STR</b> — 위험점수 70 이상 거래에 초안 생성 → 담당자 판단 후 제출 (특금법 제4조)</span>
         </div>
 
         {loading ? (
           <div className="empty">불러오는 중...</div>
         ) : reports.length === 0 ? (
-          <div className="empty">준법감시 보고서가 없습니다. 거래를 생성하면 자동으로 생성됩니다.</div>
+          <div className="empty">준법감시 보고서가 없습니다. 고위험 거래가 탐지되면 STR 초안이 생성됩니다.</div>
         ) : (
           <table>
             <thead>
@@ -107,7 +140,7 @@ export default function Compliance({ user }) {
                 <th>상태</th>
                 <th>관련 법령</th>
                 <th>생성 일시</th>
-                {canSubmit && <th>제출</th>}
+                {canSubmit && <th>처리</th>}
               </tr>
             </thead>
             <tbody>
@@ -123,15 +156,32 @@ export default function Compliance({ user }) {
                     </td>
                     <td style={{ fontWeight: 600 }}>{fmtAmt(report.amount)}</td>
                     <td>
-                      <span className={`badge ${report.status === 'SUBMITTED' ? 'badge-success' : 'badge-warning'}`}>
-                        {report.status === 'PENDING' ? '제출 대기' : '제출 완료'}
+                      <span className={`badge ${(STATUS_INFO[report.status] || {}).badge || 'badge-gray'}`}>
+                        {(STATUS_INFO[report.status] || {}).label || report.status}
                       </span>
                     </td>
                     <td style={{ fontSize: 12, color: '#475569' }}>{info.law}</td>
                     <td style={{ color: '#94a3b8', fontSize: 12 }}>{fmtDate(report.created_at)}</td>
                     {canSubmit && (
                       <td>
-                        {report.status === 'PENDING' ? (
+                        {report.status === 'DRAFT' ? (
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button
+                              className="btn btn-primary btn-sm"
+                              disabled={submitting === report.id}
+                              onClick={() => handleReview(report.id, 'APPROVE')}
+                            >
+                              보고 대상
+                            </button>
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              disabled={submitting === report.id}
+                              onClick={() => handleReview(report.id, 'DISMISS')}
+                            >
+                              보고 불필요
+                            </button>
+                          </div>
+                        ) : report.status === 'APPROVED' ? (
                           <button
                             className="btn btn-primary btn-sm"
                             disabled={submitting === report.id}
@@ -169,7 +219,7 @@ export default function Compliance({ user }) {
             <ul style={{ lineHeight: 1.8, paddingLeft: 16 }}>
               <li>근거: 특정금융정보법 제4조</li>
               <li>기준: 자금세탁·불법재산 의심거래</li>
-              <li>본 시스템: 위험점수 70 이상 자동 탐지</li>
+              <li>본 시스템: 위험점수 70 이상 초안 생성, 보고 여부는 담당자 판단</li>
               <li>제출기한: 의심 인식 후 3영업일 이내</li>
             </ul>
           </div>
