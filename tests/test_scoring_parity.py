@@ -46,8 +46,9 @@ def replayed(client):
         recipient = rng.choice(RECIPIENTS)
         amount = rng.choice([5_000.0, 50_000.0, 100_000.0, 2_000_000.0])
         # 잔액 0(BALANCE_DRAIN·DEST_EMPTY 경계), 금액과 같은 잔액(정확히 비우기)을 섞는다
-        before = rng.choice([0.0, amount, amount / 0.95, rng.uniform(0, 5_000_000)])
-        dest_before = rng.choice([0.0, rng.uniform(0, 5_000_000)])
+        # 잔액은 원장과 같이 소수 둘째 자리까지다(NUMERIC(18,2)) — 저장 전후 값이 같아야 비교가 된다
+        before = round(rng.choice([0.0, amount, amount / 0.95, rng.uniform(0, 5_000_000)]), 2)
+        dest_before = round(rng.choice([0.0, rng.uniform(0, 5_000_000)]), 2)
 
         live_signals.append(collect_signals(
             amount, account, db_session, now=now,
@@ -65,7 +66,7 @@ def replayed(client):
             balance_orig_before=before,
             balance_orig_after=max(before - amount, 0.0),
             balance_dest_before=dest_before,
-            balance_dest_after=rng.uniform(0, 5_000_000),
+            balance_dest_after=round(rng.uniform(0, 5_000_000), 2),
             is_fraud=rng.random() < 0.1,
         ))
         db_session.commit()

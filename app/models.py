@@ -1,7 +1,19 @@
 from sqlalchemy import (
-    Boolean, Column, ForeignKey, Integer, String, Float, Numeric, DateTime, Text, UniqueConstraint, func,
+    Boolean, Column, ForeignKey, Integer, String, Double, Numeric, DateTime, Text, UniqueConstraint, func,
 )
 from .db import Base
+
+
+# 거래 기록·보고서의 금액과 잔액 — 원장(accounts.balance)과 같은 십진 고정소수로 저장한다.
+# 예전에는 Float였는데, MySQL에서 Float는 단정밀도 FLOAT이고 읽을 때 유효숫자 6자리로 돌아온다.
+# 그래서 1,234,567원 → 1,234,570원, 12,345.67원 → 12,345.70원으로 기록됐다 — 유효숫자가 6자리를 넘는
+# 모든 금액이다. SQLite는 8바이트 실수로 저장해서 드러나지 않았고, 테스트를 실제 MySQL에서 돌리자 나타났다.
+# 파이썬 쪽 탐지·통계 코드는 float로 계산하므로 읽을 때는 float로 받는다(asdecimal=False) — 저장값은 정확하다.
+Money = Numeric(18, 2, asdecimal=False)
+
+# 점수·임계값·가중치도 배정밀도(DOUBLE)로 둔다. 지금 값들은 6자리 안이라 문제가 드러나지 않았지만,
+# 금액 임계값(HIGH_VALUE 827,513 등)은 금액과 같은 크기라 같은 이유로 잘릴 수 있다.
+Real = Double
 
 
 class Account(Base):
@@ -26,22 +38,22 @@ class Transaction(Base):
     id = Column(Integer, primary_key=True, index=True)
     account_from = Column(String(64), nullable=False)
     account_to = Column(String(64), nullable=False)
-    amount = Column(Float, nullable=False)
+    amount = Column(Money, nullable=False)
     currency = Column(String(8), nullable=False, default="KRW")
     status = Column(String(32), nullable=False)
     reason = Column(String(128), nullable=True)
-    risk_score = Column(Float, nullable=False, default=0.0)
+    risk_score = Column(Real, nullable=False, default=0.0)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     # PaySim 적재 및 ML 레이어 컬럼 (기존 거래는 모두 NULL)
     transaction_type = Column(String(32), nullable=True)
-    balance_orig_before = Column(Float, nullable=True)
-    balance_orig_after = Column(Float, nullable=True)
-    balance_dest_before = Column(Float, nullable=True)
-    balance_dest_after = Column(Float, nullable=True)
+    balance_orig_before = Column(Money, nullable=True)
+    balance_orig_after = Column(Money, nullable=True)
+    balance_dest_before = Column(Money, nullable=True)
+    balance_dest_after = Column(Money, nullable=True)
     is_fraud = Column(Boolean, nullable=True)        # PaySim 정답 레이블
-    ml_anomaly_score = Column(Float, nullable=True)  # Isolation Forest 이상 점수 (0~1)
-    ensemble_score = Column(Float, nullable=True)    # 룰+ML 앙상블 최종 점수 (0~100)
+    ml_anomaly_score = Column(Real, nullable=True)  # Isolation Forest 이상 점수 (0~1)
+    ensemble_score = Column(Real, nullable=True)    # 룰+ML 앙상블 최종 점수 (0~100)
 
 
 class User(Base):
@@ -138,8 +150,8 @@ class FdsRule(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(128), nullable=False)
     condition_type = Column(String(64), nullable=False)  # fds_engine.DEFAULT_RULES 참고 (거래 룰 6종 + 시스템 신호 3종)
-    threshold = Column(Float, nullable=False)
-    weight = Column(Float, nullable=False, default=1.0)  # 위험점수 기여 가중치
+    threshold = Column(Real, nullable=False)
+    weight = Column(Real, nullable=False, default=1.0)  # 위험점수 기여 가중치
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -150,7 +162,7 @@ class FdsAlert(Base):
     id = Column(Integer, primary_key=True, index=True)
     transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=True)
     alert_type = Column(String(64), nullable=False)
-    risk_score = Column(Float, nullable=False)
+    risk_score = Column(Real, nullable=False)
     status = Column(String(32), nullable=False, default="DETECTED")  # DETECTED | UNDER_REVIEW | APPROVED | REJECTED
     detail = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -178,7 +190,7 @@ class ComplianceReport(Base):
     transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=False)
     account_from = Column(String(64), nullable=False)
     account_to = Column(String(64), nullable=False)
-    amount = Column(Float, nullable=False)
+    amount = Column(Money, nullable=False)
     currency = Column(String(8), nullable=False)
     reason = Column(Text, nullable=True)
     status = Column(String(32), nullable=False, default="DRAFT")  # DRAFT | APPROVED | DISMISSED | SUBMITTED
