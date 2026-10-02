@@ -174,8 +174,10 @@ hybrid_score = α × rule_score + (1-α) × if_score
                                                              └→ DISMISSED (보고 불필요)
 ```
 - **STR**: 특금법 제4조의 요건은 "의심되는 합당한 근거"에 대한 **사람의 판단**이다. 그래서
-  점수로는 초안만 만들고, 제출은 검토에서 APPROVED된 건만 할 수 있다. 검토자와 판단 사유는
-  해시 체인 감사 로그에 남는다(`REVIEW_STR_APPROVE` / `REVIEW_STR_DISMISS`).
+  점수로는 초안만 만들고, 제출은 검토에서 APPROVED된 건만 할 수 있다. 검토자·시각·판단 사유는
+  보고서 행(`reviewed_by`, `reviewed_at`, `review_reason`)에 저장해 바로 조회하고, 해시 체인
+  감사 로그에도 별도로 남긴다(`REVIEW_STR_APPROVE` / `REVIEW_STR_DISMISS`). FDS 알림의
+  `reviewed_by`/`reviewed_at`과 같은 구조다.
   70점은 ML 앙상블이 켜진 구성에서만 도달할 수 있다(2절 참고).
 - **CTR — 미구현**: CTR 대상은 **현금** 입출금이고, 기준은 **동일인 1거래일 합산** 1천만원
   이상이다. 이 시스템에는 계좌이체만 있고 계좌를 고객 단위로 묶는 식별자도 없다. 예전에는
@@ -185,6 +187,8 @@ hybrid_score = α × rule_score + (1-α) × if_score
 - 상태값 변경(PENDING → DRAFT) 이전에 만든 DB가 있다면
   [`scripts/migrations/2026-10-03_str_draft_status.sql`](scripts/migrations/2026-10-03_str_draft_status.sql)을
   한 번 실행한다. 기존 PENDING STR은 DRAFT로 되돌리고, 이체로 생성됐던 CTR은 지우지 않고 DISMISSED로 종결한다.
+  검토 컬럼 추가 이전 DB라면
+  [`scripts/migrations/2026-10-03_compliance_review_columns.sql`](scripts/migrations/2026-10-03_compliance_review_columns.sql)도 실행한다.
 
 ### 6. 불변 감사 추적 (Audit Trail) — SHA-256 해시 체인
 모든 중요 이벤트를 `audit_logs` 테이블에 기록한다. 행은 INSERT 전용이다.
@@ -324,7 +328,7 @@ pip install pytest
 pytest tests/ -q
 ```
 
-현재 환경에서 실행한 결과: **86 passed**
+현재 환경에서 실행한 결과: **87 passed**
 
 | 파일 | 건수 | 범위 |
 |---|---:|---|
@@ -332,7 +336,7 @@ pytest tests/ -q
 | `test_audit_chain.py` | 12 | 감사 해시 체인 — 수정·중간 삭제·꼬리 삭제 탐지 |
 | `test_calibration.py` | 18 | lift/AUC/IV 지표, 룰 신호 생성, 점수 도달 가능성 |
 | `test_fds.py` | 16 | FDS 룰 엔진·위험점수·알림 |
-| `test_kyc.py` / `test_transactions.py` / `test_auth.py` / `test_compliance.py` | 34 | KYC, 거래, 인증·RBAC, STR 검토 흐름·이체 CTR 미생성 |
+| `test_kyc.py` / `test_transactions.py` / `test_auth.py` / `test_compliance.py` | 35 | KYC, 거래, 인증·RBAC, STR 검토 흐름·이체 CTR 미생성 |
 
 ---
 

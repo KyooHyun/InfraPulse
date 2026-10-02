@@ -71,7 +71,12 @@ def test_approve_then_submit(client, staff_auth, risk_auth, db_session):
 
     resp = _review(client, risk_auth, report_id, "APPROVE", "단기간 다수 계좌 경유, 거래 목적 소명 불가")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "APPROVED"
+    body = resp.json()
+    assert body["status"] == "APPROVED"
+    # 검토 결과는 감사 로그를 뒤지지 않고 보고서에서 바로 조회된다
+    assert body["review_reason"] == "단기간 다수 계좌 경유, 거래 목적 소명 불가"
+    assert body["reviewed_by"] is not None
+    assert body["reviewed_at"] is not None
 
     resp = client.post(f"/compliance/reports/{report_id}/submit", headers=risk_auth)
     assert resp.status_code == 200
@@ -98,6 +103,12 @@ def test_review_only_once(client, staff_auth, risk_auth, db_session):
 def test_review_requires_comment(client, staff_auth, risk_auth, db_session):
     report_id = _make_str_draft(client, staff_auth, db_session)
     assert _review(client, risk_auth, report_id, "APPROVE", "   ").status_code == 422
+
+
+def test_draft_has_no_review_fields(client, staff_auth, risk_auth, db_session):
+    report_id = _make_str_draft(client, staff_auth, db_session)
+    report = next(r for r in client.get("/compliance/reports", headers=risk_auth).json() if r["id"] == report_id)
+    assert report["reviewed_by"] is None and report["review_reason"] is None
 
 
 def test_review_is_audited_with_reviewer(client, staff_auth, risk_auth, admin_auth, db_session):

@@ -264,6 +264,9 @@ class ComplianceReportOut(BaseModel):
     status: str
     report_number: str
     created_at: datetime
+    reviewed_at: Optional[datetime]
+    reviewed_by: Optional[int]
+    review_reason: Optional[str]
     submitted_at: Optional[datetime]
 
 

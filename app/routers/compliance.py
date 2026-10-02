@@ -49,7 +49,8 @@ def review_report(
 ):
     """
     DRAFT 보고서를 담당자가 판단한다 — APPROVE면 APPROVED(제출 대기),
-    DISMISS면 DISMISSED(보고 불필요). 판단 사유와 검토자는 감사 로그에 남는다.
+    DISMISS면 DISMISSED(보고 불필요). 검토자·시각·사유는 보고서에 저장하고,
+    감사 로그에도 별도로 남긴다.
     STR은 "의심되는 합당한 근거"에 대한 사람의 판단이 요건이라, 점수만으로는 제출하지 않는다.
     """
     report = _get_report(db, report_id)
@@ -57,6 +58,9 @@ def review_report(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="이미 검토된 보고서입니다")
 
     report.status = "APPROVED" if body.decision == "APPROVE" else "DISMISSED"
+    report.reviewed_at = datetime.now(timezone.utc)
+    report.reviewed_by = current_user.id
+    report.review_reason = body.comment
     db.commit()
     db.refresh(report)
 

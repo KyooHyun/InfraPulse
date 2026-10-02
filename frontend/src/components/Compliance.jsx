@@ -159,6 +159,11 @@ export default function Compliance({ user }) {
                       <span className={`badge ${(STATUS_INFO[report.status] || {}).badge || 'badge-gray'}`}>
                         {(STATUS_INFO[report.status] || {}).label || report.status}
                       </span>
+                      {report.review_reason && (
+                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
+                          사유: {report.review_reason}
+                        </div>
+                      )}
                     </td>
                     <td style={{ fontSize: 12, color: '#475569' }}>{info.law}</td>
                     <td style={{ color: '#94a3b8', fontSize: 12 }}>{fmtDate(report.created_at)}</td>

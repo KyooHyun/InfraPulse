@@ -159,6 +159,11 @@ class ComplianceReport(Base):
     status = Column(String(32), nullable=False, default="DRAFT")  # DRAFT | APPROVED | DISMISSED | SUBMITTED
     report_number = Column(String(64), unique=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # 검토 결과는 업무 데이터라 보고서에 둔다. 감사 로그는 위변조 탐지용 기록이지
+    # "누가 왜 승인했는가"를 조회하는 원천이 아니다 (FdsAlert.reviewed_* 와 같은 구조).
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    review_reason = Column(Text, nullable=True)
     submitted_at = Column(DateTime(timezone=True), nullable=True)
 
 
