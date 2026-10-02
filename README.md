@@ -41,7 +41,8 @@ simulator ───────────────────────�
 
 ---
 ## ML / PaySim 검증 전략
-- 공개 모바일 머니 거래 데이터셋 **PaySim**(Kaggle)을 외부 벤치마크로 사용합니다.
+- 공개 모바일 머니 거래 데이터셋 **PaySim**(Kaggle)을 유일한 외부 벤치마크로 사용합니다.
+  (이전에 쓰던 ULB Credit Card 비교 결과는 철회했습니다 — 3절 참고)
 - `scripts/load_paysim.py`로 CSV를 DB에 적재하고, PaySim의 `is_fraud` 라벨을 그대로 보존합니다.
 - `scripts/train_model.py`는 Isolation Forest를 비지도 학습으로 학습하며, 레이블은 평가용으로만 사용합니다.
 - `scripts/evaluate.py`는 룰 기반 베이스라인, Isolation Forest, 그리고 룰+ML 앙상블을 비교해 precision / recall / FPR 트레이드오프를 명시합니다.
@@ -155,18 +156,12 @@ HIGH_VALUE 룰 후보군 안에 거짓경보가 많은 룰 기반의 한계를 �
 hybrid_score = α × rule_score + (1-α) × if_score
 ```
 
-라벨 있는 공개 데이터셋(ULB Credit Card Fraud, n=284,807, fraud=492)으로 룰 단독 vs 앙상블 오프라인 비교 결과:
-
-| 지표 | 룰 단독 | 룰+IF 앙상블 | 변화 |
-|------|---------|-------------|------|
-| FPR | 4.99% | 2.50% | **▼50.0%** |
-| Recall | 8.74% | 8.33% | ▼0.41%p |
-| 거짓경보 | 14,199건 | 7,096건 | **7,103건 감소** |
-
-탐지율 손실을 최소화(-0.41%p)하면서 운영팀의 거짓경보 검토 부담을 절반으로 감소.  
-단, 사기 표본이 작아 recall 변화는 참고치.
-
-초기 PaySim 데이터셋 시도 시 고액 거래가 사기·정상 무관하게 이상치로 분류되는 한계를 진단하고, PCA 피처 기반 데이터셋(V1-V28)으로 교체. 평가 상세: [`evaluation/README.md`](evaluation/README.md), 결과 조회: `GET /fds/comparison`
+**성능 비교: 재측정 예정.** 이전에 ULB Credit Card 데이터셋으로 "FPR ▼50%"라고 적었던
+비교표는 철회했다. 평가 스크립트가 실제 엔진을 호출하지 않고 `Amount >= p95 → 45점` 룰
+하나를 따로 구현해 기준선으로 썼고(실제 HIGH_VALUE는 30점), α도 스크립트마다 달랐다.
+또 FPR 감소는 임계값만 올려도 얻을 수 있어서, 같은 알림 건수에서의 recall이나 PR-AUC로
+비교해야 앙상블이 낫다고 말할 수 있다. 실제 엔진의 점수 함수로 PaySim에서 다시 측정할
+때까지 `GET /fds/comparison`은 `{"status": "pending"}`을 반환한다. 상세: [`evaluation/README.md`](evaluation/README.md)
 
 ### 4. FDS 이상거래 검토 워크플로우
 ```
@@ -235,7 +230,7 @@ Swagger UI: **http://localhost:8000/docs**
 | `GET` | `/fds/alerts` | FDS 알림 목록 | RISK_OFFICER |
 | `GET` | `/fds/alerts/{id}` | FDS 알림 상세 | RISK_OFFICER |
 | `POST` | `/fds/alerts/{id}/review` | 알림 검토 (승인/기각) | RISK_OFFICER |
-| `GET` | `/fds/comparison` | 룰 단독 vs 룰+IF 앙상블 성능 비교 | RISK_OFFICER |
+| `GET` | `/fds/comparison` | 룰 단독 vs 룰+IF 앙상블 성능 비교 (재측정 예정, 현재 `status: "pending"`) | RISK_OFFICER |
 | `GET` | `/fds/rules` | FDS 룰 목록 | ADMIN |
 | `PUT` | `/fds/rules/{id}` | FDS 룰 수정 | ADMIN |
 | `GET` | `/compliance/reports` | STR 보고서 목록 | RISK_OFFICER |

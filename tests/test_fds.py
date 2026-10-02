@@ -195,3 +195,10 @@ def test_stats_rule_coverage_after_high_value(client, risk_auth, staff_auth):
 def test_stats_forbidden_for_staff(client, staff_auth):
     resp = client.get("/fds/stats", headers=staff_auth)
     assert resp.status_code == 403
+
+
+def test_comparison_pending_until_remeasured(client, risk_auth):
+    """철회된 비교 결과 대신 재측정 대기 상태를 200으로 알린다 (503은 장애로 집계된다)."""
+    resp = client.get("/fds/comparison", headers=risk_auth)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "pending"

@@ -228,23 +228,22 @@ def get_stats(
 @router.get(
     "/comparison",
     response_model=Dict[str, Any],
-    summary="룰 기반 vs 룰+IF 앙상블 성능 비교 (PaySim 평가)",
+    summary="룰 기반 vs 룰+IF 앙상블 성능 비교 (재측정 예정)",
 )
 def get_comparison(
     current_user: models.User = Depends(require_role("RISK_OFFICER", "ADMIN")),
 ):
     """
-    PaySim 공개 데이터셋으로 평가한 룰 단독 vs 룰+Isolation Forest 앙상블 성능 비교표.
+    룰 단독 vs 룰+Isolation Forest 앙상블 오프라인 비교 결과(`evaluation/results.json`).
 
-    - **rule_only**: 룰 기반 단독 FDS (현행 시스템)
-    - **hybrid_rule_if**: 룰 점수(60%) + IF 이상 점수(40%) 앙상블
-    - **improvement**: FPR 감소율, Recall 변화량
-
-    결과 재생성: `python evaluation/paysim_eval.py --csv <PaySim CSV 경로>`
+    이전 결과(ULB Credit Card, FPR ▼50%)는 철회했다. 평가 스크립트가 실제 엔진 대신
+    `Amount >= p95 → 45점` 룰 하나를 따로 구현해 기준선으로 썼고(실제 HIGH_VALUE는 30점),
+    α도 스크립트마다 달랐다. 실제 엔진의 점수 함수로 다시 측정할 때까지 `status: "pending"`을
+    반환한다. 503은 "일시적 장애"라는 뜻이라 오류율 지표에 장애로 잡히므로 쓰지 않는다.
     """
     if not _COMPARISON_RESULTS.exists():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="평가 결과 파일이 없습니다. evaluation/paysim_eval.py를 먼저 실행하세요.",
-        )
+        return {
+            "status": "pending",
+            "detail": "비교 결과 재측정 예정 — 이전 결과는 기준선이 실제 엔진과 달라 철회했습니다.",
+        }
     return json.loads(_COMPARISON_RESULTS.read_text(encoding="utf-8"))
