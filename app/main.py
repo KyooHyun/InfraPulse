@@ -10,7 +10,6 @@ from sqlalchemy.exc import OperationalError
 from .config import settings
 from .db import Base, engine, SessionLocal
 from .fds_engine import seed_default_rules
-from . import ml_engine
 from .metrics import (
     anomaly_event_total,
     anomaly_latency_total,
@@ -69,7 +68,6 @@ def _initialize_db() -> None:
                 seed_default_rules(db)
                 _seed_users(db)
                 audit.ensure_chain_head(db)
-                ml_engine.load_or_train(db)
             finally:
                 db.close()
             logger.info("Database initialized")

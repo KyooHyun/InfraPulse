@@ -7,8 +7,11 @@ import numpy as np
 
 from .features import FEATURE_NAMES
 
-# 앙상블 가중치 (α: 룰 비중, 1-α: ML 비중)
-# evaluate.py에서 최적 α를 찾고 여기 반영할 수 있다.
+# 앙상블 가중치 (α: 룰 비중, 1-α: ML 비중). **α는 여기에만 정의한다.**
+# 운영(transactions.py)·평가(scripts/evaluate.py)·캘리브레이션(calibration/reachability.py)이
+# 모두 이 값을 읽는다. 예전에는 평가 스크립트마다 α를 따로 적어 0.4/0.5/0.6이 섞여 있었다
+# (tests/test_single_source.py가 재발을 막는다).
+# 최적 α 탐색은 시간 분할 평가가 들어간 뒤에 한다 — 같은 데이터로 고르고 재면 과적합이다.
 RULE_ALPHA = 0.5
 
 
