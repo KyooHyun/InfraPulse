@@ -19,10 +19,47 @@ from app.fds_engine import seed_default_rules
 from app.security import get_password_hash
 from app import audit, models
 
-TEST_DB_URL = "sqlite:///./test.db"
+# ── 테스트 DB 선택 ────────────────────────────────────────────────────────────
+#
+# 기본은 SQLite 파일 DB라 Docker 없이 돈다. FDS_TEST_DB=mysql이면 Testcontainers로 운영과 같은
+# MySQL 8.0을 띄워 **같은 테스트를 그대로** 그 위에서 돌린다 — SQLite에서는 흉내만 낸 FOR UPDATE 행 잠금,
+# 유니크 제약 경합, 데드락을 실제 엔진으로 검증하기 위해서다.
+#
+#     FDS_TEST_DB=mysql pytest tests/test_concurrency.py tests/test_idempotency.py tests/test_mysql_locking.py
+#
+# MySQL에서만 의미가 있는 테스트(데드락 재현, 잠금 대기 초과)는 @pytest.mark.mysql로 표시하고,
+# 기본 실행에서는 건너뛴다.
+TEST_DB = os.environ.get("FDS_TEST_DB", "sqlite")
 
-engine = create_engine(TEST_DB_URL, connect_args={"check_same_thread": False})
+if TEST_DB == "mysql":
+    import atexit
+
+    from testcontainers.mysql import MySqlContainer
+
+    from app.config import settings
+    from app.db import configure_lock_wait_timeout
+
+    _mysql = MySqlContainer("mysql:8.0", dialect="pymysql")
+    _mysql.start()
+    atexit.register(_mysql.stop)
+    engine = create_engine(_mysql.get_connection_url(), pool_size=20, max_overflow=10, pool_pre_ping=True)
+    configure_lock_wait_timeout(engine, settings.mysql_lock_wait_timeout_seconds)
+else:
+    engine = create_engine("sqlite:///./test.db", connect_args={"check_same_thread": False})
 TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "mysql: 실제 MySQL이 필요한 테스트 (FDS_TEST_DB=mysql일 때만 실행)")
+
+
+def pytest_collection_modifyitems(config, items):
+    if TEST_DB == "mysql":
+        return
+    skip = pytest.mark.skip(reason="FDS_TEST_DB=mysql 일 때만 실행 (Docker 필요)")
+    for item in items:
+        if "mysql" in item.keywords:
+            item.add_marker(skip)
 
 
 # ── SQLite에서 쓰기 트랜잭션 직렬화 ────────────────────────────────────────────
@@ -48,7 +85,8 @@ TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # FDS_TEST_NO_LOCK=1 로 이 직렬화를 꺼서 "잠금이 없으면 정말 깨지는가"를
 # 확인할 수 있다(음성 대조군). tests/test_concurrency.py 상단 주석 참고.
-SERIALIZE_WRITES = os.environ.get("FDS_TEST_NO_LOCK") != "1"
+# MySQL에서는 FOR UPDATE가 실제로 잠그므로 이 우회가 필요 없다.
+SERIALIZE_WRITES = TEST_DB == "sqlite" and os.environ.get("FDS_TEST_NO_LOCK") != "1"
 
 
 @event.listens_for(engine, "connect")

@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     mysql_user: str = "finops_user"
     mysql_password: str = "finops_pass"
     mysql_db: str = "finops"
+    # 행 잠금 대기 상한(초)과 데드락·잠금 대기 초과 시 이체 재시도 횟수 (app/db.py, transactions.py)
+    mysql_lock_wait_timeout_seconds: int = 5
+    transfer_lock_retries: int = 3
 
     jwt_secret_key: str = _DEFAULT_JWT_SECRET
     jwt_algorithm: str = "HS256"

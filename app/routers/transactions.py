@@ -1,9 +1,10 @@
 import logging
 from random import random
+from time import sleep
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from ..crud import create_transaction, get_transactions
@@ -16,6 +17,7 @@ from ..metrics import (
     anomaly_high_value_total,
     anomaly_velocity_total,
     fds_alert_total,
+    transfer_lock_retry_total,
     risk_score_histogram,
     transaction_failed_total,
     transaction_total,
@@ -44,6 +46,16 @@ if settings.fds_ml_enabled:
         logger.warning("FDS_ML_ENABLED=true지만 ML 의존성이 없다 — 룰 점수만 사용한다")
 
 router = APIRouter(prefix="/transactions", tags=["거래"])
+
+
+# MySQL 에러 코드 — 재시도하면 성공할 수 있는 잠금 충돌
+_LOCK_CONFLICT_ERRNO = {1213: "deadlock", 1205: "lock_wait_timeout"}
+
+
+def _lock_conflict(exc: OperationalError) -> Optional[str]:
+    """데드락·잠금 대기 초과면 그 이름, 아니면 None (그대로 올릴 오류)."""
+    args = getattr(exc.orig, "args", ())
+    return _LOCK_CONFLICT_ERRNO.get(args[0]) if args and isinstance(args[0], int) else None
 
 
 def _unchanged_balances(sender: models.Account, receiver: models.Account) -> Dict[str, object]:
@@ -144,7 +156,8 @@ def transfer(
     # 3. 잠금 구간 — 잔액 확인·이동·거래기록이 한 트랜잭션 안에서 끝난다.
     #    여기서 SELECT ... FOR UPDATE가 없으면 같은 계좌에 동시 이체가 들어올 때
     #    둘 다 같은 잔액을 읽고 둘 다 통과시켜 초과 인출이 발생한다.
-    try:
+    def run_locked():
+        """잠금 구간 한 번. (재현된 거래, None) 또는 (새 거래, 상태)를 돌려준다. 커밋까지 한다."""
         accounts = ledger.lock_accounts(db, (req.account_from, req.account_to))
         sender = accounts[req.account_from]
         receiver = accounts[req.account_to]
@@ -155,7 +168,7 @@ def transfer(
         replayed = replay_if_seen()
         if replayed is not None:
             db.rollback()   # 잠금 해제
-            return replayed
+            return replayed, None
 
         # 무작위 실패 시뮬레이션 — 잔액과 무관한 대외계 오류를 흉내낸다.
         failure_chance = 0.25 if req.amount > 50_000 else 0.15
@@ -182,17 +195,45 @@ def transfer(
             # 잔액 변경·거래 기록·키가 한 커밋으로 묶인다 — 셋 중 일부만 남는 상태가 없다.
             idempotency.record(db, current_user.id, idempotency_key, req_hash, transaction)
         db.commit()
-    except IntegrityError:
-        # 같은 키의 동시 요청이 먼저 커밋했다 — 이 요청의 잔액 변경은 통째로 롤백되고,
-        # 먼저 확정된 결과를 돌려준다. 다른 무결성 오류면 그대로 올린다.
-        db.rollback()
-        replayed = replay_if_seen()
-        if replayed is None:
+        return transaction, tx_status
+
+    # 데드락(1213)·잠금 대기 초과(1205)는 MySQL이 트랜잭션 하나를 희생시켜 롤백한 것이다. 그 트랜잭션의
+    # 변경은 남지 않으므로 처음부터 다시 실행해도 이중 출금이 되지 않는다. 계좌 잠금 순서를 고정해
+    # 데드락은 원래 생기지 않아야 하지만(ledger.lock_accounts), 다른 경로가 같은 행을 다른 순서로
+    # 잠그는 경우까지 막을 수는 없어 방어적으로 재시도한다.
+    attempts = settings.transfer_lock_retries + 1
+    for attempt in range(attempts):
+        try:
+            transaction, tx_status = run_locked()
+            break
+        except IntegrityError:
+            # 같은 키의 동시 요청이 먼저 커밋했다 — 이 요청의 잔액 변경은 통째로 롤백되고,
+            # 먼저 확정된 결과를 돌려준다. 다른 무결성 오류면 그대로 올린다.
+            db.rollback()
+            replayed = replay_if_seen()
+            if replayed is None:
+                raise
+            return replayed
+        except OperationalError as exc:
+            db.rollback()
+            reason = _lock_conflict(exc)
+            if reason is None:
+                raise
+            transfer_lock_retry_total.labels(reason=reason).inc()
+            if attempt == attempts - 1:
+                logger.warning("이체 잠금 충돌 — 재시도 %d회 후 포기 (%s)", settings.transfer_lock_retries, reason)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="계좌가 다른 이체로 잠겨 있습니다 — 같은 Idempotency-Key로 다시 시도하세요",
+                )
+            logger.info("이체 잠금 충돌 — 재시도 %d/%d (%s)", attempt + 1, settings.transfer_lock_retries, reason)
+            sleep(0.05 * (2 ** attempt) * (1 + random()))   # 지수 백오프 + 지터
+        except Exception:
+            db.rollback()
             raise
-        return replayed
-    except Exception:
-        db.rollback()
-        raise
+
+    if transaction is not None and tx_status is None:   # 잠금 후 재조회로 재현된 결과
+        return transaction
 
     db.refresh(transaction)
 
