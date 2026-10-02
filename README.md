@@ -28,7 +28,7 @@
                        │              │
               ┌────────▼──┐    ┌──────▼──────┐
               │   MySQL   │    │  Prometheus  │
-              │ (11개 테이블)│    │  (메트릭 수집)│
+              │ (12개 테이블)│    │  (메트릭 수집)│
               └───────────┘    └──────┬───────┘
                                       │
                                ┌──────▼───────┐
@@ -161,6 +161,19 @@ AssertionError: 잔액으로 감당 가능한 건수(3)보다 많이 성공했�
   로그에는 원장과 같은 정규화된 금액을 남긴다. 응답 금액은 JSON 숫자 그대로다(유효숫자 15자리까지 센트 단위로 정확).
 - **재시도와 메트릭**: 재시도는 DB 변경을 롤백하지만 Prometheus 카운터는 롤백되지 않는다. 거래 건수(`transaction_total`)는
   커밋 뒤에만 세므로 재시도가 있어도 한 번이다(MySQL 데드락 재시도 테스트가 확인). 재시도 횟수는 별도 메트릭에 남는다.
+**복식부기 엔트리와 대사** (`ledger_entries`, `app/reconciliation.py`, `python scripts/reconcile.py`)
+
+잔액 컬럼(`accounts.balance`)은 그대로 두고, 돈이 움직일 때마다 근거를 추가 전용 테이블에 두 행씩 남긴다.
+성공한 이체는 출금 −금액·입금 +금액, 계좌 개설은 시스템 자본 계정 −개설금액·새 계좌 +개설금액. 엔트리는 잔액 변경과
+**같은 커밋**에 들어간다. 대사 스크립트는 두 가지를 검사하고, 불일치는 고치지 않고 보고만 한다(종료 코드 1).
+
+1. 분개마다 엔트리 합이 0인가 — 한쪽 다리만 남았으면 돈이 생기거나 사라진 것이다
+2. 계좌 잔액이 엔트리 누적과 같은가 — 잔액 컬럼이 분개 없이 바뀌었다는 뜻이다(직접 UPDATE, 버그, 위변조)
+
+검증(`tests/test_reconciliation.py`, SQLite·MySQL): 동시 이체 12건 뒤에도 일치한다. **잔액을 일부러 1,000원 올리면**
+그 계좌가 정확한 차이와 함께 보고되고, **분개의 한쪽 다리를 지우면** 분개 불균형과 잔액 불일치가 함께 보고된다.
+합이 0이 아닌 분개는 기록 시점에 거부한다. 스케줄러는 두지 않았다.
+
 - **부하 테스트 때 측정할 것**: 감사 로그 해시 체인은 모든 기록이 `audit_chain_head` 한 행을 `FOR UPDATE`로 거쳐 간다.
   이체마다 감사 로그를 남기므로 MySQL에서 전역 직렬화 지점이 된다. 지금은 고치지 않고 병목 여부를 잰다.
 
@@ -368,6 +381,7 @@ Swagger UI: **http://localhost:8000/docs**
 | `fds_alerts` | FDS 이상거래 알림 |
 | `fds_decisions` | 알림 검토 결정 이력 |
 | `compliance_reports` | STR 보고서 (DRAFT → APPROVED/DISMISSED → SUBMITTED) |
+| `ledger_entries` | 복식부기 분개 — 추가 전용, 이체·개설마다 합 0인 두 행 |
 | `idempotency_keys` | 이체 멱등성 키 — (user_id, key) 유니크, 요청 해시, 확정된 거래 |
 | `kyc_records` | 고객확인 정보 |
 
@@ -433,7 +447,8 @@ pytest tests/ -q
 FDS_TEST_DB=mysql pytest tests/ -q
 ```
 
-현재 환경에서 실행한 결과: SQLite **111 passed, 6 skipped** (MySQL 전용 테스트는 건너뜀) / MySQL **117 passed**
+현재 환경에서 실행한 결과: SQLite **120 passed, 6 skipped** (MySQL 전용 테스트는 건너뜀) / MySQL **126 passed**
+(CI에서도 두 구성을 모두 돌린다 — `.github/workflows/tests.yml`)
 
 > Windows + Python 3.14에서는 docker SDK가 named pipe에 연결하지 못해(`NpipeSocket` 비호환) Testcontainers가 뜨지
 > 않는다. MySQL 테스트는 Python 3.13 가상환경에서 돌렸다.
@@ -442,6 +457,7 @@ FDS_TEST_DB=mysql pytest tests/ -q
 |---|---:|---|
 | `test_concurrency.py` | 6 | 이체 행 잠금 — 초과 인출·금액 보존·잠금 순서 |
 | `test_mysql_locking.py` | 6 | **MySQL 전용** — FOR UPDATE 제거 시 초과 인출(대조군), 정렬 없는 잠금의 데드락 재현, 데드락 재시도, 잠금 대기 초과 → 503 |
+| `test_reconciliation.py` | 7 | 이체당 차변·대변 2행, 동시 이체 후 대사 일치, 잔액 조작·분개 다리 삭제를 대사가 잡아냄 |
 | `test_money_precision.py` | 5 | 거래 금액이 저장 후에도 정확한가 (MySQL FLOAT 잘림 회귀) |
 | `test_idempotency.py` | 9 | 같은 키 동시 12건 → 출금 1건, 키 기록 끄면 12건(대조군), 유니크 제약만으로 보장, 키 재사용 409, 확정 실패 재현, 예외 시 키 롤백 |
 | `test_audit_chain.py` | 12 | 감사 해시 체인 — 수정·중간 삭제·꼬리 삭제 탐지 |
