@@ -43,9 +43,14 @@ simulator ───────────────────────�
 ## ML / PaySim 검증 전략
 - 공개 모바일 머니 거래 데이터셋 **PaySim**(Kaggle)을 유일한 외부 벤치마크로 사용합니다.
   (이전에 쓰던 ULB Credit Card 비교 결과는 철회했습니다 — 3절 참고)
-- `scripts/load_paysim.py`로 CSV를 DB에 적재하고, PaySim의 `is_fraud` 라벨을 그대로 보존합니다.
-- `scripts/train_model.py`는 Isolation Forest를 비지도 학습으로 학습하며, 레이블은 평가용으로만 사용합니다.
-- `scripts/evaluate.py`는 룰 기반 베이스라인, Isolation Forest, 그리고 룰+ML 앙상블을 비교해 precision / recall / FPR 트레이드오프를 명시합니다.
+- `scripts/train_model.py`는 Isolation Forest를 비지도 학습으로 학습하며, 레이블은 contamination 추정과 평가에만 사용합니다.
+- `scripts/evaluate.py`는 룰 단독, Isolation Forest, 룰+ML 앙상블을 ROC-AUC·PR-AUC·**같은 알림 예산에서의 재현율**로 비교합니다.
+  CSV에서 바로 읽으며(`--source paysim --csv ...`), DB 적재(`scripts/load_paysim.py`)는 선택입니다.
+- **평가 코드는 점수를 직접 계산하지 않습니다.** 룰 점수(`evaluate_signals`, `DEFAULT_RULES`), IF 정규화
+  (`IFModel.anomaly_scores`), 앙상블(`ensemble_score`, α=`RULE_ALPHA`)을 모두 운영 코드에서 import합니다.
+  277만 건을 거래마다 DB 조회로 계산할 수는 없어서 신호·피처를 모으는 쪽만 오프라인 구현
+  (`calibration/dataset.py`)이 따로 있고, 운영 경로와 같은 값을 내는지는 `tests/test_scoring_parity.py`가
+  고정합니다. α·IF 생성·정규화·룰 기본값이 정해진 한 곳 밖에 다시 정의되면 `tests/test_single_source.py`가 실패합니다.
 - PaySim 평가 시에는 CSV에 포함된 `TRANSFER`/`CASH_OUT` 거래와 PaySim에 존재하는 룰 피처만 사용합니다. 로그인 실패, 거래 실패율, 응답 지연과 같은 항목은 PaySim 원본 데이터에 직접 포함되지 않아 별도 평가 대상에서 제외됩니다.
 - 알림별 `rule_contributions`와 ML `z-score` 기반 상위 이상 피처를 함께 제공해 설명가능성을 확보합니다.
 - Autoencoder는 작은 PaySim 샘플과 튜닝 리스크를 고려해 현재 구현 범위에 포함하지 않습니다.
@@ -156,12 +161,25 @@ HIGH_VALUE 룰 후보군 안에 거짓경보가 많은 룰 기반의 한계를 �
 hybrid_score = α × rule_score + (1-α) × if_score
 ```
 
-**성능 비교: 재측정 예정.** 이전에 ULB Credit Card 데이터셋으로 "FPR ▼50%"라고 적었던
-비교표는 철회했다. 평가 스크립트가 실제 엔진을 호출하지 않고 `Amount >= p95 → 45점` 룰
-하나를 따로 구현해 기준선으로 썼고(실제 HIGH_VALUE는 30점), α도 스크립트마다 달랐다.
-또 FPR 감소는 임계값만 올려도 얻을 수 있어서, 같은 알림 건수에서의 recall이나 PR-AUC로
-비교해야 앙상블이 낫다고 말할 수 있다. 실제 엔진의 점수 함수로 PaySim에서 다시 측정할
-때까지 `GET /fds/comparison`은 `{"status": "pending"}`을 반환한다. 상세: [`evaluation/README.md`](evaluation/README.md)
+**운영 엔진으로 잰 기준점** (PaySim TRANSFER/CASH_OUT 2,770,409건, 사기 0.296%):
+
+| 방법 | ROC-AUC | PR-AUC | recall@0.5% (같은 알림 예산) |
+|---|---:|---:|---:|
+| 룰 단독 | 0.547 | 0.0033 | 0.006 |
+| Isolation Forest | 0.883 | 0.0354 | 0.159 |
+| 앙상블 (α=0.5) | 0.794 | 0.0398 | 0.173 |
+
+- 룰 단독은 무작위와 같다(recall@0.5%의 무작위 기댓값은 0.005). 리팩터링 전의 진단(AUC 0.547,
+  MEDIUM/HIGH 0건)이 그대로 재현됐다.
+- **IF 수치는 아직 성능 주장이 아니다.** 같은 데이터로 학습하고 평가했고(표본 내 평가), 9개 피처 중 4개가
+  이체 **후** 잔액(`balance_*_after`, `error_*`)이라 판정 시점에 쓸 수 없는 정보가 섞여 있다.
+  시간 분할과 거래 전 피처로 다시 잰 뒤에야 앙상블이 낫다고 말할 수 있다.
+- 이전의 ULB 비교표("FPR ▼50%")는 철회했다. 평가 스크립트가 실제 엔진 대신 `Amount >= p95 → 45점`
+  룰을 따로 구현해 기준선으로 썼고, α(0.4)와 IF 정규화도 운영과 달랐다. 지금은 평가 코드가 룰·α·정규화를
+  모두 운영 코드에서 import하고, 이것은 테스트로 고정되어 있다(위 "ML / PaySim 검증 전략").
+  `GET /fds/comparison`은 시간 분할 결과가 나올 때까지 `{"status": "pending"}`을 반환한다.
+
+상세: [`evaluation/README.md`](evaluation/README.md)
 
 ### 4. FDS 이상거래 검토 워크플로우
 ```
@@ -328,7 +346,7 @@ pip install pytest
 pytest tests/ -q
 ```
 
-현재 환경에서 실행한 결과: **87 passed**
+현재 환경에서 실행한 결과: **93 passed**
 
 | 파일 | 건수 | 범위 |
 |---|---:|---|
@@ -336,6 +354,8 @@ pytest tests/ -q
 | `test_audit_chain.py` | 12 | 감사 해시 체인 — 수정·중간 삭제·꼬리 삭제 탐지 |
 | `test_calibration.py` | 18 | lift/AUC/IV 지표, 룰 신호 생성, 점수 도달 가능성 |
 | `test_fds.py` | 16 | FDS 룰 엔진·위험점수·알림 |
+| `test_scoring_parity.py` | 4 | 운영 경로(DB 조회)와 오프라인 평가 경로의 신호·룰 점수·ML 피처 일치 |
+| `test_single_source.py` | 2 | α·IF 생성·IF 정규화·룰 기본값이 한 곳에만 정의됨 |
 | `test_kyc.py` / `test_transactions.py` / `test_auth.py` / `test_compliance.py` | 35 | KYC, 거래, 인증·RBAC, STR 검토 흐름·이체 CTR 미생성 |
 
 ---
@@ -344,9 +364,9 @@ pytest tests/ -q
 
 우선순위 순. 기능 추가보다 이미 진단한 결함을 고쳐 "진단 → 개선 → 재측정"을 완결하는 것이 먼저다.
 
-1. **탐지 엔진 재측정** — 평가 코드가 실제 엔진의 점수 함수를 import하도록 바꾸고(α는 설정 한 곳),
-   사기 신호 룰(거래 전 잔액 대비 인출 비율 등)을 PaySim에서 시간 분할로 측정한다.
-   알림 예산 기반 임계값, 동일 알림 건수 recall·PR-AUC 비교.
+1. **탐지 엔진 개선** — (완료: 평가 코드가 운영 엔진을 import, 기준점 재현) 다음은 시간 분할(앞 step에서
+   임계값·모델 결정, 뒤 step에서 평가), IF 피처를 거래 전 정보로 제한, 사기 신호 룰(거래 전 잔액 대비
+   인출 비율 등) 추가, 알림 예산 기반 임계값.
 2. **거래 정합성** — 이체 멱등성 키, Testcontainers MySQL로 `FOR UPDATE` 동시성 실검증
    (데드락 재시도·락 타임아웃 포함), 복식부기 원장과 대사 배치, 부하 테스트.
 3. **CTR** — 현금 거래 유형과 고객 식별자 추가 후 동일인 1거래일 합산으로 구현.
