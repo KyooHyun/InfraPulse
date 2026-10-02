@@ -17,50 +17,44 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..fds_engine import VELOCITY_WINDOW_MINUTES
 
+# 판정 시점(이체 실행 전)에 알 수 있는 값만 쓴다. 예전 피처 9개 중 4개(balance_orig_after,
+# balance_dest_after, error_orig, error_dest)는 이체가 끝난 뒤의 잔액이었다 — 판정 시점에 없는 정보다.
+#
+# 이 5개는 학습 구간 안의 검증 구간(PaySim 10~12일)에서 고른 세트다. 평가 구간은 보지 않았다.
+#   원래 9개            검증 PR-AUC 0.0269
+#   5개 (아래)          검증 PR-AUC 0.1956
+#   5개 + 잔액 비율·0 여부 3개  검증 PR-AUC 0.0396
+# 잔액 비율(amount/잔액)을 넣으면 오히려 나빠진다. PaySim 정상 거래의 47%는 거래 전 잔액이 0인데도
+# 송금해서 비율이 극단값(중앙값 605)이 되고, 사기는 정확히 1.0이다. 비지도인 IF는 극단값을 이상으로
+# 보므로 정상 거래를 고립시킨다. 이 신호는 지도 방식(룰)으로 다룰 일이다. (evaluation/README.md)
 FEATURE_NAMES = [
-    "amount_log",          # log1p(amount)
+    "amount_log",              # log1p(amount)
     "balance_orig_before",
-    "balance_orig_after",
     "balance_dest_before",
-    "balance_dest_after",
-    "error_orig",          # |newOrig + amount - oldOrig| — 잔액 불일치 지표
-    "error_dest",          # |newDest - oldDest - amount| — 잔액 불일치 지표
     "hour_of_day",
-    "velocity_10min",      # 동일 계좌의 직전 거래 수 (현재 건 제외)
+    "velocity_10min",          # 동일 계좌의 직전 거래 수 (현재 건 제외)
 ]
 
 
 def feature_values(
     amount: float,
     balance_orig_before: Optional[float],
-    balance_orig_after: Optional[float],
     balance_dest_before: Optional[float],
-    balance_dest_after: Optional[float],
     hour: Optional[int],
     velocity: float,
 ) -> List[float]:
     """관측값 → 피처 벡터(FEATURE_NAMES 순서). DB를 모른다.
 
+    입력은 전부 이체 실행 **전**에 알 수 있는 값이다. 그래서 이 피처로 만든 점수는 커밋 전에
+    매길 수도 있다(지금은 사후 모니터링으로 둔다 — README "ML / PaySim 검증 전략").
+
     velocity는 동일 계좌의 윈도우 내 **직전** 거래 수다(현재 건 제외). 룰의 VELOCITY
     신호는 현재 건을 포함해 세므로, 같은 윈도우라면 이 값은 VELOCITY - 1이다.
     """
-    bef_orig = balance_orig_before or 0.0
-    aft_orig = balance_orig_after or 0.0
-    bef_dest = balance_dest_before or 0.0
-    aft_dest = balance_dest_after or 0.0
-
-    # PaySim의 핵심 사기 신호: 잔액 변동이 거래 금액과 불일치
-    error_orig = abs(aft_orig + amount - bef_orig)
-    error_dest = abs(aft_dest - bef_dest - amount)
-
     return [
         float(np.log1p(amount)),
-        bef_orig,
-        aft_orig,
-        bef_dest,
-        aft_dest,
-        error_orig,
-        error_dest,
+        balance_orig_before or 0.0,
+        balance_dest_before or 0.0,
         float(hour) if hour is not None else 12.0,
         float(velocity),
     ]
@@ -90,9 +84,7 @@ def extract_features(tx: models.Transaction, db: Session) -> np.ndarray:
         feature_values(
             tx.amount,
             tx.balance_orig_before,
-            tx.balance_orig_after,
             tx.balance_dest_before,
-            tx.balance_dest_after,
             tx.created_at.hour if tx.created_at else None,
             velocity,
         ),

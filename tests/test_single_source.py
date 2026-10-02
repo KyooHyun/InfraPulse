@@ -42,3 +42,17 @@ def test_owners_still_define_them():
     """패턴이 낡아서 아무것도 못 잡는 상태가 되지 않도록, 정의 위치에서는 잡혀야 한다."""
     for what, owner, pattern in SINGLE_SOURCES:
         assert pattern.search((ROOT / owner).read_text(encoding="utf-8")), f"{what} 패턴이 {owner}에서 안 잡힌다"
+
+
+def test_ml_features_use_only_pre_transaction_values():
+    """ML 피처는 이체 실행 전에 알 수 있는 값만 받는다.
+
+    예전 피처 9개 중 4개가 이체 후 잔액(balance_*_after, error_*)이었다 — 판정 시점에 없는
+    정보라 운영에서 이체를 보류시킬 수 없었고, PaySim에서는 성능을 부풀렸다.
+    """
+    import inspect
+    from app.ml.features import FEATURE_NAMES, feature_values
+
+    params = inspect.signature(feature_values).parameters
+    assert not [p for p in params if "after" in p], "feature_values가 거래 후 값을 받는다"
+    assert not [f for f in FEATURE_NAMES if "after" in f or f.startswith("error_")]

@@ -224,8 +224,9 @@ def ml_feature_matrix(samples: List[Sample]):
     out = np.empty((len(samples), len(FEATURE_NAMES)), dtype=float)
     for i, s in enumerate(samples):
         velocity = s.signals.get("VELOCITY")
+        orig_before, _, dest_before, _ = s.balances   # 거래 후 잔액은 피처에 쓰지 않는다
         out[i] = feature_values(
-            s.amount, *s.balances, s.hour,
+            s.amount, orig_before, dest_before, s.hour,
             velocity - 1 if velocity is not None else 0.0,
         )
     return out
