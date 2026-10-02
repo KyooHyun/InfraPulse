@@ -1,6 +1,10 @@
 # 임계값 캘리브레이션
 
-FDS 룰의 임계값(10만원·실패율 30%·10분 5건)과 등급 경계(40점·70점)에 근거를 붙이는 도구.
+FDS 룰의 임계값과 등급 경계(40점·70점)에 근거를 붙이는 도구.
+
+> **현재 룰은 이 문서가 진단한 룰이 아니다.** 아래 내용은 예전 룰(HIGH_VALUE 10만·FAILURE_RATE·VELOCITY)의 진단
+> 기록이다. 그 진단(AUC 0.547, 룰만으로 HIGH 도달 불가)에 따라 룰을 거래 전 사기 신호로 교체했다. 새 룰의 임계값·가중치는
+> `python -m calibration.weights`가 PaySim 1~9일로 정한다. 결과와 평가는 [`evaluation/README.md`](../evaluation/README.md).
 
 이 디렉터리는 `financial-risk-detector`(OpenDART 재무위험 탐지) 프로젝트의
 `calibration/` 패키지를 이식한 것이다. 그 프로젝트에서 같은 문제 — "수기로 정한 점수
