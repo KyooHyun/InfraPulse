@@ -8,7 +8,8 @@ from requests.exceptions import RequestException
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://transaction-api:8000")
 INTERVAL_SECONDS = int(os.environ.get("SIMULATOR_INTERVAL", "15"))
-HIGH_VALUE_THRESHOLD = int(os.environ.get("SIMULATOR_HIGH_VALUE_THRESHOLD", "100000"))
+# fds_engine.DEFAULT_RULES의 HIGH_VALUE 임계값(PaySim 1~9일 금액의 95 분위수)과 맞춘다
+HIGH_VALUE_THRESHOLD = int(os.environ.get("SIMULATOR_HIGH_VALUE_THRESHOLD", "827513"))
 SIMULATOR_USER = os.environ.get("SIMULATOR_USER", "admin")
 SIMULATOR_PASSWORD = os.environ.get("SIMULATOR_PASSWORD", "Admin1234!")
 LOGIN_FAIL_USER = os.environ.get("SIMULATOR_LOGIN_FAIL_USER", "simuser")

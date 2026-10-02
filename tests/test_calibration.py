@@ -115,11 +115,12 @@ def test_failure_rate_uses_only_preceding_transactions():
 
 def test_missing_signal_does_not_fire_the_rule():
     rules = default_rules()
-    signals = {"HIGH_VALUE": 500_000.0, "FAILURE_RATE": None, "VELOCITY": None}
+    # HIGH_VALUE_TOP 등 나머지 신호는 키가 없거나 None — 판정하지 않는다
+    signals = {"HIGH_VALUE": 1_000_000.0, "BALANCE_DRAIN": None, "VELOCITY": None}
     score, triggered, contributions = evaluate_signals(signals, rules)
 
     assert triggered == ["HIGH_VALUE"]
-    assert score == 30.0
+    assert score == 20.0
     assert all(c["fired"] is False for c in contributions if c["rule_type"] != "HIGH_VALUE")
 
 
@@ -139,14 +140,17 @@ def test_max_reachable_score_is_the_sum_of_transaction_scoped_weights():
     assert result["max_reachable_rule_score"] == expected
 
 
-def test_system_level_rules_are_reported_as_non_contributing():
-    """LOGIN_FAILURE와 LATENCY는 fds_rules에 가중치를 달고 있지만 거래 점수에는 못 들어간다."""
+def test_system_level_rules_carry_no_weight():
+    """FAILURE_RATE·LOGIN_FAILURE·LATENCY는 시스템 신호라 거래 점수에 들어가지 않는다.
+
+    예전에는 이 룰들이 가중치(25·20·15)를 달고 있어 "룰 5개 100점"처럼 보였지만, 거래 한 건이
+    받을 수 있는 점수에는 보태지 않았다. 이제 가중치 0이라 선언과 실제가 일치한다.
+    """
     result = reachability.analyze()
     orphans = {rule["rule_type"] for rule in result["orphan_rules"]}
 
-    assert orphans == {"LOGIN_FAILURE", "LATENCY"}
-    assert result["orphan_weight_total"] > 0
-    assert result["declared_weight_total"] > result["max_reachable_rule_score"]
+    assert orphans == {"FAILURE_RATE", "LOGIN_FAILURE", "LATENCY"}
+    assert result["orphan_weight_total"] == 0
 
 
 def test_level_reachability_flags_match_the_arithmetic():
@@ -157,39 +161,45 @@ def test_level_reachability_flags_match_the_arithmetic():
         assert level["reachable_by_rules"] == (maximum >= level["boundary"])
 
 
-def test_known_gap_rule_only_config_cannot_reach_high():
-    """**현재 알려진 결함을 고정한다.**
+def test_rule_only_config_can_reach_high():
+    """룰만 쓰는 구성에서도 HIGH(70점)에 도달한다 — STR 초안 생성 경로가 살아 있다.
 
-    거래 단위 룰 가중치의 합(30+25+10=65)이 HIGH 경계(70)보다 작다. 즉 ML을 끈
-    구성에서는 어떤 거래도 HIGH가 될 수 없고, 그 경계에 걸린 STR 초안 생성은
-    실행되지 않는다. README의 "위험점수 70점 이상 거래에 STR 초안 생성"은
-    룰 전용 구성에서는 사실이 아니다.
-
-    임계값을 내릴지 가중치를 올릴지는 데이터가 정할 일이라 여기서 손대지 않았다
-    (calibration/threshold.py). **이 테스트가 실패하면 그 결정이 내려졌다는 뜻이므로,
-    README와 calibration/README.md 를 함께 고쳐야 한다.**
+    예전 가중치(30+25+10=65)로는 HIGH가 구조적으로 불가능했다. calibration/weights.py로 다시 정한
+    가중치에서는 도달한다. **이 테스트가 실패하면 HIGH 등급과 STR 초안이 다시 죽은 경로가 된다.**
     """
     result = reachability.analyze()
     high = next(level for level in result["levels"] if level["level"] == "HIGH")
 
-    assert result["max_reachable_rule_score"] < RISK_LEVEL_HIGH
-    assert high["reachable_by_rules"] is False
-    assert high["shortfall"] == pytest.approx(5.0)
+    assert result["max_reachable_rule_score"] >= RISK_LEVEL_HIGH
+    assert high["reachable_by_rules"] is True
 
 
-def test_medium_is_unreachable_without_high_value():
-    """HIGH_VALUE가 발화하지 않으면 나머지 룰을 다 합쳐도 MEDIUM에 못 미친다.
+def test_high_requires_balance_drain():
+    """HIGH에 도달하는 모든 룰 조합에 BALANCE_DRAIN이 들어 있다 — 알려진 의존성을 고정한다.
 
-    FAILURE_RATE(25) + VELOCITY(10) = 35 < 40. 고액이 아닌 이상거래는 아무리
-    여러 룰에 걸려도 담당자 검토 대기열에 올라오지 않는다는 뜻이다.
+    BALANCE_DRAIN은 PaySim에서 합성 데이터의 특성(사기는 잔액을 정확히 비운다)에 기대는 신호다.
+    그래서 평가에서는 이 룰을 뺀 결과를 나란히 보고한다(evaluation/README.md).
     """
     result = reachability.analyze()
-    without_high_value = [
+    high_rows = [row for row in result["reachable_score_table"] if row["score"] >= RISK_LEVEL_HIGH]
+
+    assert high_rows
+    assert all("BALANCE_DRAIN" in row["fired_rules"] for row in high_rows)
+
+
+def test_medium_is_reachable_without_high_value():
+    """고액이 아닌 이상거래도 MEDIUM(검토 대기열)에 오를 수 있다.
+
+    예전에는 HIGH_VALUE 없이는 나머지 룰을 다 합쳐도 35점이라, 소액 분할 수법이 구조적으로
+    검토 대상에서 빠졌다.
+    """
+    result = reachability.analyze()
+    without_amount = [
         row for row in result["reachable_score_table"]
-        if "HIGH_VALUE" not in row["fired_rules"]
+        if not {"HIGH_VALUE", "HIGH_VALUE_TOP"} & set(row["fired_rules"])
     ]
 
-    assert max(row["score"] for row in without_high_value) < RISK_LEVEL_MEDIUM
+    assert max(row["score"] for row in without_amount) >= RISK_LEVEL_MEDIUM
 
 
 def test_ensemble_configuration_can_reach_high():

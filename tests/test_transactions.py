@@ -48,13 +48,51 @@ def test_transfer_invalid_currency(client, staff_auth):
     assert resp.status_code == 422
 
 
-def test_transfer_high_value_creates_fds_alert(client, staff_auth, risk_auth):
-    """100,000원 이상 거래는 HIGH_VALUE FDS 알림을 생성해야 한다."""
-    _transfer(client, staff_auth, amount=200_000)
+def _post(client, staff_auth, sender, recipient, amount):
+    resp = client.post(
+        "/transactions/transfer",
+        json={"account_from": sender, "account_to": recipient, "amount": amount, "currency": "KRW"},
+        headers=staff_auth,
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
 
-    alerts = client.get("/fds/alerts", headers=risk_auth).json()
-    high_value_alerts = [a for a in alerts if a["alert_type"] == "HIGH_VALUE"]
-    assert len(high_value_alerts) > 0
+
+def _alerts_for(client, risk_auth, transaction_id):
+    alerts = client.get("/fds/alerts?limit=500", headers=risk_auth).json()
+    return [a for a in alerts if a["transaction_id"] == transaction_id]
+
+
+def test_medium_score_transfer_creates_fds_alert(client, staff_auth, risk_auth):
+    """200만 원을 처음 보는 수취인에게 → 20 + 10 + 10 = 40점(MEDIUM) → 발화한 룰마다 알림."""
+    tx = _post(client, staff_auth, "ACC-TX-M1", "ACC-TX-M-NEW", 2_000_000)
+
+    assert tx["risk_score"] == 40.0
+    types = {a["alert_type"] for a in _alerts_for(client, risk_auth, tx["id"])}
+    assert types == {"HIGH_VALUE", "HIGH_VALUE_TOP", "NEW_RECIPIENT"}
+
+
+def test_low_score_transfer_creates_no_alert(client, staff_auth, risk_auth):
+    """LOW는 기록만 한다. 신규 수취인(10점) 하나만 발화한 소액 이체는 알림을 만들지 않는다."""
+    tx = _post(client, staff_auth, "ACC-TX-L1", "ACC-TX-L-NEW", 10_000)
+
+    assert tx["risk_score"] == 10.0
+    assert _alerts_for(client, risk_auth, tx["id"]) == []
+
+
+def test_balance_drain_reaches_high_and_drafts_str(client, staff_auth, risk_auth):
+    """잔액을 거의 비우는 이체는 룰만으로 HIGH(70점)에 도달하고 STR 초안이 생긴다.
+
+    새 계좌의 개설 잔액(1억)의 95%를 처음 보는 수취인에게 보낸다:
+    BALANCE_DRAIN 45 + HIGH_VALUE 20 + HIGH_VALUE_TOP 10 + NEW_RECIPIENT 10 = 85점.
+    예전 가중치로는 룰만으로 HIGH에 도달할 수 없어 이 경로가 죽어 있었다.
+    """
+    tx = _post(client, staff_auth, "ACC-TX-DRAIN", "ACC-TX-DRAIN-NEW", 95_000_000)
+
+    assert tx["risk_score"] == 85.0
+    reports = client.get("/compliance/reports", headers=risk_auth).json()
+    drafts = [r for r in reports if r["transaction_id"] == tx["id"]]
+    assert len(drafts) == 1 and drafts[0]["status"] == "DRAFT"
 
 
 def test_list_transactions_authenticated(client, staff_auth):

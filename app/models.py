@@ -112,7 +112,7 @@ class FdsRule(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(128), nullable=False)
-    condition_type = Column(String(64), nullable=False)  # HIGH_VALUE | FAILURE_RATE | LOGIN_FAILURE | LATENCY | VELOCITY
+    condition_type = Column(String(64), nullable=False)  # fds_engine.DEFAULT_RULES 참고 (거래 룰 6종 + 시스템 신호 3종)
     threshold = Column(Float, nullable=False)
     weight = Column(Float, nullable=False, default=1.0)  # 위험점수 기여 가중치
     is_active = Column(Boolean, nullable=False, default=True)

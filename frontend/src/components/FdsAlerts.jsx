@@ -7,6 +7,10 @@ function fmtDate(dt) {
 
 const ALERT_TYPE_LABEL = {
   HIGH_VALUE: '고액거래',
+  HIGH_VALUE_TOP: '초고액거래',
+  BALANCE_DRAIN: '잔액 비우기',
+  DEST_EMPTY: '빈 수취 계좌',
+  NEW_RECIPIENT: '신규 수취인',
   VELOCITY: '단기 다건',
   FAILURE_RATE: '실패율 과다',
   LOGIN_FAILURE: '로그인 실패',

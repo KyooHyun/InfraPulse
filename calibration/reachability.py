@@ -46,7 +46,12 @@ def rule_weights(rules: List[Dict[str, Any]] | None = None) -> Dict[str, float]:
 
 
 def reachable_scores(weights: Dict[str, float]) -> List[Dict[str, Any]]:
-    """거래 단위 룰의 모든 발화 조합과 그 점수."""
+    """거래 단위 룰의 모든 발화 조합과 그 점수.
+
+    룰이 서로 독립이라고 가정한 상한이다 — 동시에 발화할 수 없는 조합(HIGH_VALUE_TOP만 발화하고
+    HIGH_VALUE는 발화하지 않는 경우 등)도 들어 있다. "도달 가능"은 "이 점수 조합이 산수상 존재한다"는
+    뜻이지 실제 거래에서 나온다는 뜻이 아니다.
+    """
     scoped = [rule for rule in TRANSACTION_SCOPED_RULES if rule in weights]
     rows: List[Dict[str, Any]] = []
     for size in range(len(scoped) + 1):
@@ -72,10 +77,10 @@ def _level_of(score: float) -> str:
 def orphan_rules(weights: Dict[str, float]) -> List[Dict[str, Any]]:
     """정의돼 있지만 거래 위험점수에 기여하지 않는 룰.
 
-    LOGIN_FAILURE와 LATENCY는 각각 인증 경로와 미들웨어에서 처리되는 시스템 신호다.
-    fds_rules 테이블에 가중치를 달고 앉아 있어서 "룰 5개 × 총 가중치 100점" 처럼
-    보이지만, 거래 한 건이 받을 수 있는 점수에는 한 점도 보태지 않는다.
-    등급 경계를 총 가중치 기준으로 잡았다면 그 순간부터 경계가 어긋난다.
+    FAILURE_RATE·LOGIN_FAILURE·LATENCY는 시스템 신호다(전체 실패율, 인증, 응답 지연).
+    예전에는 fds_rules 테이블에서 가중치를 달고 있어 "룰 5개 × 총 가중치 100점"처럼 보였지만
+    거래 점수에는 한 점도 보태지 않았다. 지금은 가중치 0이다 — orphan_weight_total이 0이 아니면
+    선언된 점수 공간과 실제 점수 공간이 다시 어긋났다는 뜻이다.
     """
     return [
         {"rule_type": rule_type, "weight": weight}
@@ -156,6 +161,8 @@ def main() -> None:
           f"{result['orphan_weight_total']:.1f}점은 거래 점수에 기여하지 않는다.")
 
     print(f"\n[2] 거래 한 건이 받을 수 있는 점수")
+    print("  * 룰이 서로 독립이라고 가정한 상한이다. 동시에 발화할 수 없는 조합도 들어 있다")
+    print("    (예: HIGH_VALUE_TOP은 HIGH_VALUE 없이 발화할 수 없다).")
     print(f"  {'발화 룰':<44}{'점수':>7}{'등급':>8}")
     for row in result["reachable_score_table"]:
         fired = ", ".join(row["fired_rules"]) or "(없음)"

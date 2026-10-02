@@ -34,7 +34,7 @@ services:
     environment:
       - API_BASE_URL=http://transaction-api:8000
       - SIMULATOR_INTERVAL=15
-      - SIMULATOR_HIGH_VALUE_THRESHOLD=100000
+      - SIMULATOR_HIGH_VALUE_THRESHOLD=827513
       - SIMULATOR_USER=admin
       - SIMULATOR_PASSWORD=Admin1234!
       - SIMULATOR_LOGIN_FAIL_USER=simuser

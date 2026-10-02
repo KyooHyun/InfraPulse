@@ -24,8 +24,9 @@ from tests.conftest import TestingSession
 
 N_TRANSACTIONS = 300
 ACCOUNTS = [f"PAR-{i:02d}" for i in range(6)]
-# 0분 간격(동률)과 정확히 10분(VELOCITY 윈도우 경계)을 일부러 섞는다
-GAPS_MINUTES = [0, 0, 1, 2, 3, 5, 10, 10, 11, 30]
+RECIPIENTS = [f"PAR-R{i:02d}" for i in range(15)]
+# 0분 간격(동률), 정확히 10분(VELOCITY 윈도우 경계), 정확히 24시간(NEW_RECIPIENT 윈도우 경계)을 섞는다
+GAPS_MINUTES = [0, 0, 1, 2, 3, 5, 10, 10, 11, 30, 24 * 60]
 
 
 @pytest.fixture(scope="module")
@@ -42,14 +43,20 @@ def replayed(client):
     for _ in range(N_TRANSACTIONS):
         now += timedelta(minutes=rng.choice(GAPS_MINUTES))
         account = rng.choice(ACCOUNTS)
+        recipient = rng.choice(RECIPIENTS)
         amount = rng.choice([5_000.0, 50_000.0, 100_000.0, 2_000_000.0])
+        # 잔액 0(BALANCE_DRAIN·DEST_EMPTY 경계), 금액과 같은 잔액(정확히 비우기)을 섞는다
+        before = rng.choice([0.0, amount, amount / 0.95, rng.uniform(0, 5_000_000)])
+        dest_before = rng.choice([0.0, rng.uniform(0, 5_000_000)])
 
-        live_signals.append(collect_signals(amount, account, db_session, now=now))
+        live_signals.append(collect_signals(
+            amount, account, db_session, now=now,
+            account_to=recipient, balance_orig_before=before, balance_dest_before=dest_before,
+        ))
 
-        before = rng.uniform(0, 5_000_000)
         db_session.add(models.Transaction(
             account_from=account,
-            account_to=rng.choice(ACCOUNTS),
+            account_to=recipient,
             amount=amount,
             currency="KRW",
             status="failed" if rng.random() < 0.3 else "success",
@@ -57,7 +64,7 @@ def replayed(client):
             created_at=now,
             balance_orig_before=before,
             balance_orig_after=max(before - amount, 0.0),
-            balance_dest_before=rng.uniform(0, 5_000_000),
+            balance_dest_before=dest_before,
             balance_dest_after=rng.uniform(0, 5_000_000),
             is_fraud=rng.random() < 0.1,
         ))
@@ -85,6 +92,9 @@ def test_history_exercises_the_edges(replayed):
     assert max(velocities) >= 3, "VELOCITY가 누적되는 구간이 있어야 한다"
     assert any(s["FAILURE_RATE"] is None for s in live_signals), "실패율 표본 부족 구간"
     assert any(s["FAILURE_RATE"] is not None for s in live_signals), "실패율 계산 구간"
+    for rule in ("BALANCE_DRAIN", "DEST_EMPTY", "NEW_RECIPIENT"):
+        values = {s[rule] >= (0.9 if rule == "BALANCE_DRAIN" else 1.0) for s in live_signals}
+        assert values == {True, False}, f"{rule}가 발화하는 거래와 안 하는 거래가 모두 있어야 한다"
 
 
 def test_rule_signals_match(replayed):

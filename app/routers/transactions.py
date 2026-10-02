@@ -8,12 +8,11 @@ from sqlalchemy.orm import Session
 from ..crud import create_transaction, get_transactions
 from ..db import get_db
 from .. import ledger
-from ..fds_engine import get_active_rules, evaluate_transaction, RISK_LEVEL_HIGH
+from ..fds_engine import get_active_rules, evaluate_transaction, RISK_LEVEL_HIGH, RISK_LEVEL_MEDIUM
 from ..report_generator import create_str
 from ..metrics import (
     anomaly_event_total,
     anomaly_high_value_total,
-    anomaly_transaction_failure_total,
     anomaly_velocity_total,
     fds_alert_total,
     risk_score_histogram,
@@ -97,10 +96,23 @@ def transfer(
     # 1. 계좌 확보 — 잠금 구간 밖에서 미리 개설한다 (ledger.ensure_accounts 주석 참고)
     ledger.ensure_accounts(db, (req.account_from, req.account_to), req.currency)
 
-    # 2. FDS 평가 — 거래 이력 집계라 계좌 잔액과 무관하므로 잠금 전에 끝낸다.
-    #    잠금을 쥔 채로 하면 집계 쿼리 시간만큼 같은 계좌의 다른 이체가 대기한다.
+    # 2. FDS 평가 — 잠금 전에 끝낸다. 잠금을 쥔 채로 하면 집계 쿼리 시간만큼 같은 계좌의
+    #    다른 이체가 대기한다. 잔액 룰(BALANCE_DRAIN, DEST_EMPTY)에 쓰는 거래 전 잔액은 잠그지
+    #    않고 읽는다 — 동시 이체가 있으면 잠금 후 실제 잔액과 조금 다를 수 있지만, 판정 근거로는
+    #    충분하고 잔액 이동 자체의 정합성은 아래 잠금 구간이 지킨다.
+    pre_balances = {
+        a.account_id: float(a.balance)
+        for a in db.query(models.Account)
+        .filter(models.Account.account_id.in_((req.account_from, req.account_to)))
+        .all()
+    }
     rules = get_active_rules(db)
-    risk_score, triggered, contributions = evaluate_transaction(req.amount, req.account_from, db, rules)
+    risk_score, triggered, contributions = evaluate_transaction(
+        req.amount, req.account_from, db, rules,
+        account_to=req.account_to,
+        balance_orig_before=pre_balances.get(req.account_from),
+        balance_dest_before=pre_balances.get(req.account_to),
+    )
 
     # 3. 잠금 구간 — 잔액 확인·이동·거래기록이 한 트랜잭션 안에서 끝난다.
     #    여기서 SELECT ... FOR UPDATE가 없으면 같은 계좌에 동시 이체가 들어올 때
@@ -158,8 +170,11 @@ def transfer(
     # 생성되지 않았다. (calibration/reachability.py 가 이 불일치를 수치로 보여준다)
     effective_score = ens_score if ens_score is not None else risk_score
 
-    # 4. FDS 알림 생성 (트리거된 룰별)
-    for alert_type in triggered:
+    # 4. FDS 알림 생성 — MEDIUM 이상일 때만, 트리거된 룰별로.
+    #    LOW는 기록만 한다(모듈 docstring의 등급 정의). 예전에는 점수와 무관하게 발화한 룰마다
+    #    알림을 만들어서, 거래의 1/3에서 발화하는 NEW_RECIPIENT 같은 약한 신호가 검토 대기열을 채웠다.
+    alerted = triggered if effective_score >= RISK_LEVEL_MEDIUM else []
+    for alert_type in alerted:
         detail = f"위험점수: {risk_score:.1f} | 트리거: {alert_type}"
         if ml_score is not None:
             detail += f" | ML점수: {ml_score:.3f} | 앙상블: {ens_score:.1f}"
@@ -173,15 +188,13 @@ def transfer(
         db.add(alert)
         anomaly_event_total.inc()
         fds_alert_total.labels(alert_type=alert_type).inc()
-        if alert_type == "HIGH_VALUE":
+        if alert_type in ("HIGH_VALUE", "HIGH_VALUE_TOP"):
             anomaly_high_value_total.inc()
-        elif alert_type == "FAILURE_RATE":
-            anomaly_transaction_failure_total.inc()
         elif alert_type == "VELOCITY":
             anomaly_velocity_total.inc()
 
     # ML 점수 또는 알림이 생성된 경우 단일 커밋으로 처리
-    if triggered or ml_score is not None:
+    if alerted or ml_score is not None:
         db.commit()
 
     risk_score_histogram.observe(risk_score)

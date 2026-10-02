@@ -1,7 +1,8 @@
 """라벨 붙은 거래 → (정답, 룰 신호) 쌍.
 
-캘리브레이션 분석은 전부 이 형태를 입력으로 쓴다. 중요한 건 여기서 만든 신호를
-**운영과 같은 함수**(app.fds_engine.evaluate_signals)에 넣는다는 점이다.
+캘리브레이션 분석은 전부 이 형태를 입력으로 쓴다. 중요한 건 신호를 **운영과 같은 함수**로
+만든다는 점이다 — 원천값(금액, 거래 전 잔액, 수취인 직전 입금 수, velocity)만 여기서 모으고,
+신호는 app.fds_engine.derive_signals, 점수는 app.fds_engine.evaluate_signals가 만든다.
 분석용으로 룰을 다시 구현하면 "분석에서 근거를 확인한 룰"과 "운영에서 도는 룰"이
 조용히 갈라지고, 그러면 근거는 있지만 그 근거가 운영 시스템의 것이 아니게 된다.
 
@@ -10,14 +11,14 @@ evaluate_signals가 그 룰을 판정하지 않는다 — 0으로 채우면 "발
 관측으로 둔갑해 lift가 왜곡된다.
 
   db          transactions 테이블 중 is_fraud가 채워진 행 (scripts/load_paysim.py 적재분)
-              → HIGH_VALUE, VELOCITY, FAILURE_RATE
+              → 모든 거래 룰 신호 + FAILURE_RATE(시스템 신호)
 
-  paysim      PaySim CSV                → HIGH_VALUE, VELOCITY
-              실패/성공 상태가 없어 FAILURE_RATE는 만들 수 없다.
+  paysim      PaySim CSV → 모든 거래 룰 신호
+              실패/성공 상태가 없어 FAILURE_RATE는 만들 수 없다. 송금 계좌가 최대 3회만
+              등장해 VELOCITY(5건)는 발화하지 않는다.
 
-  creditcard  ULB Credit Card Fraud CSV → HIGH_VALUE
-              계좌 식별자가 없어 VELOCITY를 만들 수 없다. 금액 임계값(10만원 자리)
-              하나만 보고 싶을 때 쓴다.
+  creditcard  ULB Credit Card Fraud CSV → HIGH_VALUE·HIGH_VALUE_TOP
+              계좌 식별자와 잔액이 없다. 금액 임계값 하나만 보고 싶을 때 쓴다.
 
 ML 피처도 같은 표본에서 만든다(ml_feature_matrix). 각 표본은 피처의 원천값(잔액,
 시각)만 들고 있고, 피처 계산은 운영과 같은 app.ml.features.feature_values가 한다.
@@ -37,7 +38,9 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.fds_engine import FAILURE_RATE_WINDOW, VELOCITY_WINDOW_MINUTES
+from app.fds_engine import (
+    FAILURE_RATE_WINDOW, RECIPIENT_WINDOW_MINUTES, VELOCITY_WINDOW_MINUTES, derive_signals,
+)
 
 # PaySim의 step은 1시간 단위다. 운영 VELOCITY 윈도우(10분)와 다르므로, PaySim에서
 # 계산한 velocity는 같은 계좌의 "1시간 내 거래 수"다. 실제 룰보다 넓은 창이라
@@ -119,6 +122,7 @@ def load_from_db(db, limit: Optional[int] = None) -> List[Sample]:
     rows = [
         {
             "account": tx.account_from,
+            "dest": tx.account_to,
             "minutes": tx.created_at.timestamp() / 60.0 if tx.created_at else 0.0,
             "amount": float(tx.amount),
             "status": tx.status,
@@ -130,6 +134,7 @@ def load_from_db(db, limit: Optional[int] = None) -> List[Sample]:
         for tx in transactions
     ]
     velocities = _velocity_by_window(rows, "account", "minutes", VELOCITY_WINDOW_MINUTES)
+    inflows = _velocity_by_window(rows, "dest", "minutes", RECIPIENT_WINDOW_MINUTES)
     failure_rates = _rolling_failure_rate(row["status"] for row in rows)
 
     return [
@@ -139,13 +144,13 @@ def load_from_db(db, limit: Optional[int] = None) -> List[Sample]:
             account_from=row["account"],
             balances=row["balances"],
             hour=row["hour"],
-            signals={
-                "HIGH_VALUE": row["amount"],
-                "FAILURE_RATE": failure_rate,
-                "VELOCITY": velocity,
-            },
+            signals=derive_signals(
+                row["amount"], row["balances"][0], row["balances"][2],
+                int(inflow) - 1,   # 현재 건을 뺀 직전 입금 수
+                velocity, failure_rate,
+            ),
         )
-        for row, velocity, failure_rate in zip(rows, velocities, failure_rates)
+        for row, velocity, inflow, failure_rate in zip(rows, velocities, inflows, failure_rates)
     ]
 
 
@@ -160,6 +165,7 @@ def load_from_paysim(path: Path, limit: Optional[int] = None) -> List[Sample]:
             step = int(record["step"])
             rows.append({
                 "account": record["nameOrig"],
+                "dest": record["nameDest"],
                 "minutes": float(step) * PAYSIM_STEP_MINUTES,
                 "step": step,
                 "amount": float(record["amount"]),
@@ -171,6 +177,8 @@ def load_from_paysim(path: Path, limit: Optional[int] = None) -> List[Sample]:
                 break
 
     velocities = _velocity_by_window(rows, "account", "minutes", PAYSIM_STEP_MINUTES)
+    # 수취인 윈도우(24시간)는 step 단위(1시간)보다 충분히 넓어 운영 정의를 그대로 쓴다.
+    inflows = _velocity_by_window(rows, "dest", "minutes", RECIPIENT_WINDOW_MINUTES)
     return [
         Sample(
             label=row["label"],
@@ -181,13 +189,13 @@ def load_from_paysim(path: Path, limit: Optional[int] = None) -> List[Sample]:
             # DB에 적재한 뒤 created_at.hour로 구한 값과 같다.
             hour=row["step"] % 24,
             step=row["step"],
-            signals={
-                "HIGH_VALUE": row["amount"],
-                "FAILURE_RATE": None,   # PaySim에는 거래 성공/실패 상태가 없다
-                "VELOCITY": velocity,
-            },
+            # PaySim에는 거래 성공/실패 상태가 없어 FAILURE_RATE는 None
+            signals=derive_signals(
+                row["amount"], row["balances"][0], row["balances"][2],
+                int(inflow) - 1, velocity,
+            ),
         )
-        for row, velocity in zip(rows, velocities)
+        for row, velocity, inflow in zip(rows, velocities, inflows)
     ]
 
 
@@ -201,7 +209,8 @@ def load_from_creditcard(path: Path, limit: Optional[int] = None) -> List[Sample
                 Sample(
                     label=int(float(record["Class"])),
                     amount=amount,
-                    signals={"HIGH_VALUE": amount, "FAILURE_RATE": None, "VELOCITY": None},
+                    # 계좌·잔액 정보가 없어 금액 신호만 만들 수 있다
+                    signals=derive_signals(amount, None, None, None, None),
                 )
             )
             if limit and len(samples) >= limit:
