@@ -25,13 +25,13 @@ class IFModel:
         self.feature_mean: np.ndarray | None = None
         self.feature_std: np.ndarray | None = None
 
-    def fit(self, X: np.ndarray, contamination: float = 0.013) -> None:
+    def fit(self, X: np.ndarray, contamination: float = 0.013, random_state: int = 42) -> None:
         self.feature_mean = X.mean(axis=0)
         self.feature_std = X.std(axis=0) + 1e-8
         self.model = IsolationForest(
             n_estimators=200,
             contamination=contamination,
-            random_state=42,
+            random_state=random_state,
             n_jobs=-1,
         )
         self.model.fit(X)
