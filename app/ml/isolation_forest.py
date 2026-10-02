@@ -40,17 +40,26 @@ class IFModel:
         self.score_min = float(scores.min())
         self.score_max = float(scores.max())
 
-    def anomaly_score(self, x: np.ndarray) -> float:
-        """0~1 이상 점수. 1에 가까울수록 이상거래."""
+    def anomaly_scores(self, X: np.ndarray) -> np.ndarray:
+        """행렬 → 0~1 이상 점수 배열. 정규화는 여기에만 있다.
+
+        운영(anomaly_score, 한 건)과 평가(277만 건 일괄)가 같은 정규화를 쓴다.
+        예전에는 평가 스크립트마다 IF 원점수를 0~100으로 바꾸는 방식이 달라서,
+        α를 통일해도 앙상블 점수의 의미가 같지 않았다.
+        """
         if self.model is None:
-            return 0.0
-        raw = float(self.model.score_samples(x.reshape(1, -1))[0])
+            return np.zeros(len(X))
+        raw = self.model.score_samples(X)
         # score_min(가장 이상) → 1, score_max(가장 정상) → 0 으로 선형 매핑
         span = self.score_max - self.score_min
         if span < 1e-8:
-            return 0.0
+            return np.zeros(len(X))
         normalized = (self.score_max - raw) / span
-        return round(max(0.0, min(1.0, normalized)), 4)
+        return np.round(np.clip(normalized, 0.0, 1.0), 4)
+
+    def anomaly_score(self, x: np.ndarray) -> float:
+        """0~1 이상 점수. 1에 가까울수록 이상거래."""
+        return float(self.anomaly_scores(x.reshape(1, -1))[0])
 
     def z_scores(self, x: np.ndarray) -> np.ndarray:
         """피처별 z-score — 설명가능성에 활용."""

@@ -7,7 +7,7 @@
   70~100 HIGH  — FDS 알림 생성 + STR(의심거래보고서) 초안 생성 → 담당자 검토
 """
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -88,17 +88,30 @@ def evaluate_signals(
     return min(score, 100.0), triggered, contributions
 
 
-def collect_signals(amount: float, account_from: str, db: Session) -> Dict[str, Any]:
-    """DB에서 룰 판정에 필요한 관측값을 모은다.
+def collect_signals(
+    amount: float,
+    account_from: str,
+    db: Session,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """DB에서 룰 판정에 필요한 관측값을 모은다. 현재 거래는 아직 기록되기 전이다.
 
     - HIGH_VALUE:   거래 금액 그대로
     - FAILURE_RATE: 최근 FAILURE_RATE_WINDOW건의 실패율. 표본이 모자라면 None —
                     거래 10건으로 계산한 실패율은 판정 근거가 되지 못한다.
     - VELOCITY:     동일 계좌의 VELOCITY_WINDOW_MINUTES 내 거래 건수(현재 건 포함)
+
+    now: VELOCITY 윈도우의 기준 시각. 운영에서는 비워 둔다(현재 시각). 과거 거래를
+         같은 정의로 다시 계산할 때(동등성 테스트) 거래 시각을 넣는다.
+    오프라인 평가는 이 함수를 277만 번 부를 수 없어 calibration/dataset.py가 같은
+    정의를 따로 계산한다. 두 구현이 같은 값을 내는지는
+    tests/test_scoring_parity.py가 고정한다.
     """
+    # 같은 시각의 거래가 윈도우 경계에 걸리면 어느 쪽이 "최근"인지 정해지지 않으므로
+    # 기록 순서(id)로 동률을 깬다. calibration/dataset.py도 (created_at, id) 순으로 센다.
     recent_statuses = (
         db.query(models.Transaction.status)
-        .order_by(models.Transaction.created_at.desc())
+        .order_by(models.Transaction.created_at.desc(), models.Transaction.id.desc())
         .limit(FAILURE_RATE_WINDOW)
         .all()
     )
@@ -109,7 +122,7 @@ def collect_signals(amount: float, account_from: str, db: Session) -> Dict[str, 
     else:
         failure_rate = None
 
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=VELOCITY_WINDOW_MINUTES)
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(minutes=VELOCITY_WINDOW_MINUTES)
     recent_count = (
         db.query(models.Transaction)
         .filter(

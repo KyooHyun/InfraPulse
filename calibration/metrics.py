@@ -116,3 +116,52 @@ def distribution_summary(values: Sequence[float]) -> Tuple[float, float, float, 
         percentile(values, 95),
         percentile(values, 99),
     )
+
+
+def _groups_by_score_desc(scores: Sequence[float], labels: Sequence[int]) -> List[Tuple[float, int, int]]:
+    """점수 내림차순으로 (점수, 건수, 사기 건수) 묶음. 동점은 한 묶음이다."""
+    groups: dict = {}
+    for score, label in zip(scores, labels):
+        n, bad = groups.get(score, (0, 0))
+        groups[score] = (n + 1, bad + (1 if label else 0))
+    return [(score, n, bad) for score, (n, bad) in sorted(groups.items(), reverse=True)]
+
+
+def average_precision(scores: Sequence[float], labels: Sequence[int]) -> float:
+    """PR-AUC(평균 정밀도). 사기율이 0.3%인 데이터에서는 ROC-AUC보다 이 값이 정직하다 —
+    정상 거래가 압도적이면 FPR이 조금만 움직여도 거짓경보 건수는 크게 늘기 때문이다.
+
+    동점 묶음은 한 임계값으로 본다 (묶음 안의 순서를 임의로 정하지 않는다).
+    """
+    positives = sum(1 for label in labels if label)
+    if positives == 0:
+        return float("nan")
+    ap = tp = flagged = 0
+    for _, n, bad in _groups_by_score_desc(scores, labels):
+        tp += bad
+        flagged += n
+        ap += (bad / positives) * (tp / flagged)
+    return ap
+
+
+def recall_at_budget(scores: Sequence[float], labels: Sequence[int], budget: float) -> float:
+    """점수 상위 budget 비율(예: 0.005 = 0.5%)만 알림으로 보낼 때의 재현율.
+
+    검토 인력이 정해져 있으면 "임계값 몇 점"이 아니라 "하루 몇 건"이 제약이다. 두 탐지기를
+    같은 알림 건수에서 비교해야 공정하다 — 한쪽만 임계값을 올리면 FPR은 얼마든지 내려간다.
+
+    예산 경계에 동점 묶음이 걸리면, 그 묶음에서 무작위로 골랐을 때의 기댓값으로 센다.
+    점수 값이 몇 개뿐인 룰 점수에서는 이 처리가 없으면 정렬 순서가 결과를 정한다.
+    """
+    positives = sum(1 for label in labels if label)
+    if positives == 0:
+        return float("nan")
+    remaining = budget * len(labels)
+    caught = 0.0
+    for _, n, bad in _groups_by_score_desc(scores, labels):
+        if remaining <= 0:
+            break
+        take = min(n, remaining)
+        caught += bad * (take / n)
+        remaining -= take
+    return caught / positives

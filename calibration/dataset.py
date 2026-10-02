@@ -19,8 +19,12 @@ evaluate_signals가 그 룰을 판정하지 않는다 — 0으로 채우면 "발
               계좌 식별자가 없어 VELOCITY를 만들 수 없다. 금액 임계값(10만원 자리)
               하나만 보고 싶을 때 쓴다.
 
+ML 피처도 같은 표본에서 만든다(ml_feature_matrix). 각 표본은 피처의 원천값(잔액,
+시각)만 들고 있고, 피처 계산은 운영과 같은 app.ml.features.feature_values가 한다.
+
 의존성은 표준 라이브러리만 쓴다. 캘리브레이션은 판단 근거를 만드는 코드이므로
-"pandas가 없어서 못 돌렸다"는 이유로 건너뛰게 되면 안 된다.
+"pandas가 없어서 못 돌렸다"는 이유로 건너뛰게 되면 안 된다. (ML 피처 행렬만 numpy가
+필요하며, 그 함수 안에서만 import한다.)
 """
 from __future__ import annotations
 
@@ -29,7 +33,7 @@ import sys
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -49,6 +53,10 @@ class Sample:
     signals: Dict[str, Any] = field(default_factory=dict)
     amount: float = 0.0
     account_from: str = ""
+    # ML 피처의 원천값 — (orig 전, orig 후, dest 전, dest 후). 출처에 없으면 None.
+    balances: Optional[Tuple[float, float, float, float]] = None
+    hour: Optional[int] = None
+    step: Optional[int] = None   # PaySim 시간 단위(1시간) — 시간 분할 평가용
 
     @property
     def available_signals(self) -> List[str]:
@@ -115,6 +123,9 @@ def load_from_db(db, limit: Optional[int] = None) -> List[Sample]:
             "amount": float(tx.amount),
             "status": tx.status,
             "label": int(bool(tx.is_fraud)),
+            "balances": (tx.balance_orig_before, tx.balance_orig_after,
+                         tx.balance_dest_before, tx.balance_dest_after),
+            "hour": tx.created_at.hour if tx.created_at else None,
         }
         for tx in transactions
     ]
@@ -126,6 +137,8 @@ def load_from_db(db, limit: Optional[int] = None) -> List[Sample]:
             label=row["label"],
             amount=row["amount"],
             account_from=row["account"],
+            balances=row["balances"],
+            hour=row["hour"],
             signals={
                 "HIGH_VALUE": row["amount"],
                 "FAILURE_RATE": failure_rate,
@@ -144,11 +157,15 @@ def load_from_paysim(path: Path, limit: Optional[int] = None) -> List[Sample]:
         for record in csv.DictReader(fp):
             if record["type"] not in fraud_types:
                 continue
+            step = int(record["step"])
             rows.append({
                 "account": record["nameOrig"],
-                "minutes": float(record["step"]) * PAYSIM_STEP_MINUTES,
+                "minutes": float(step) * PAYSIM_STEP_MINUTES,
+                "step": step,
                 "amount": float(record["amount"]),
                 "label": int(float(record["isFraud"])),
+                "balances": (float(record["oldbalanceOrg"]), float(record["newbalanceOrig"]),
+                             float(record["oldbalanceDest"]), float(record["newbalanceDest"])),
             })
             if limit and len(rows) >= limit:
                 break
@@ -159,6 +176,11 @@ def load_from_paysim(path: Path, limit: Optional[int] = None) -> List[Sample]:
             label=row["label"],
             amount=row["amount"],
             account_from=row["account"],
+            balances=row["balances"],
+            # scripts/load_paysim.py가 step을 2024-01-01 00:00 UTC + step시간으로 적재하므로
+            # DB에 적재한 뒤 created_at.hour로 구한 값과 같다.
+            hour=row["step"] % 24,
+            step=row["step"],
             signals={
                 "HIGH_VALUE": row["amount"],
                 "FAILURE_RATE": None,   # PaySim에는 거래 성공/실패 상태가 없다
@@ -185,6 +207,28 @@ def load_from_creditcard(path: Path, limit: Optional[int] = None) -> List[Sample
             if limit and len(samples) >= limit:
                 break
     return samples
+
+
+def ml_feature_matrix(samples: List[Sample]):
+    """표본 → Isolation Forest 입력 행렬. 운영과 같은 feature_values로 만든다.
+
+    ML의 velocity는 "직전 거래 수"(현재 건 제외)라 룰 VELOCITY 신호에서 1을 뺀다.
+    PaySim은 step이 1시간 단위라 VELOCITY 윈도우가 운영(10분)보다 넓다(PAYSIM_STEP_MINUTES).
+    """
+    import numpy as np
+    from app.ml.features import FEATURE_NAMES, feature_values
+
+    if any(s.balances is None for s in samples):
+        raise ValueError("잔액 정보가 없는 출처(creditcard)로는 ML 피처를 만들 수 없다")
+
+    out = np.empty((len(samples), len(FEATURE_NAMES)), dtype=float)
+    for i, s in enumerate(samples):
+        velocity = s.signals.get("VELOCITY")
+        out[i] = feature_values(
+            s.amount, *s.balances, s.hour,
+            velocity - 1 if velocity is not None else 0.0,
+        )
+    return out
 
 
 SOURCES = {"db", "paysim", "creditcard"}

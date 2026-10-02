@@ -1,120 +1,92 @@
 #!/usr/bin/env python
-"""룰 기반 vs Isolation Forest vs 앙상블 성능 비교표.
-
-PaySim 공개 데이터셋을 기준으로, 룰 베이스라인과 ML 추가 도입 시
-precision / recall / FPR 트레이드오프를 비교합니다.
-PaySim 평가 시에는 데이터셋에 존재하는 룰 피처만 적용하며,
-로그인 실패/거래 실패율/응답 지연 등 PaySim 원본에 직접 포함되지 않은 항목은 별도 평가 대상에서 제외됩니다.
+"""룰 단독 vs Isolation Forest vs 앙상블 — 운영 엔진의 점수 함수로 잰다.
 
 Usage:
-    python scripts/evaluate.py
+    python scripts/evaluate.py --source paysim --csv evaluation/data/PS_20174392719_1491204439457_log.csv
+    python scripts/evaluate.py --source db
 
-출력 예시:
-    방법                  임계값   Precision   Recall      FPR       F1
-    룰 엔진               40       0.421       0.812       0.073     0.556
-    룰 엔진               70       0.683       0.512       0.031     0.585
-    Isolation Forest      0.40     0.619       0.731       0.029     0.671
-    앙상블(α=0.5)         40       0.701       0.798       0.022     0.747
+이 스크립트는 점수를 **계산하지 않는다**. 전부 운영 코드를 import해서 쓴다:
+  룰 점수   app.fds_engine.evaluate_signals + app.fds_engine.DEFAULT_RULES (calibration.rules)
+  IF 점수   app.ml.isolation_forest.IFModel.anomaly_scores (정규화 포함)
+  앙상블    app.ml.ensemble.ensemble_score (α = RULE_ALPHA)
+  신호·피처 calibration.dataset — 운영 경로와의 일치는 tests/test_scoring_parity.py가 고정한다
 
-"룰만 쓸 때 vs 앙상블" 트레이드오프가 이 표의 핵심 스토리다.
+예전 평가 스크립트(evaluation/paysim_eval.py, creditcard_eval.py)는 룰·α·IF 정규화를
+스크립트 안에서 따로 구현했고, 그래서 운영 시스템과 다른 것을 쟀다. 그 결과는 철회했다
+(evaluation/README.md).
+
+비교 지표:
+  - ROC-AUC, PR-AUC (임계값과 무관한 순위 성능)
+  - 같은 알림 예산(상위 0.1% / 0.5% / 1%)에서의 재현율 — 임계값만 올려도 FPR은 내려가므로
+    두 탐지기는 같은 알림 건수에서 비교해야 한다
+  - 현행 등급 경계(40/70)에 걸리는 거래 수
+
+주의: IF는 같은 데이터로 학습·평가한다(표본 내). 시간 분할 평가는 다음 작업이다.
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import numpy as np
-
-from app.db import SessionLocal
-from app import models
-from app.fds_engine import get_active_rules, evaluate_transaction
-from app.ml.features import extract_features
+from app.fds_engine import RISK_LEVEL_HIGH, RISK_LEVEL_MEDIUM, evaluate_signals
+from app.ml.ensemble import RULE_ALPHA, ensemble_score
 from app.ml.isolation_forest import IFModel
-from app.ml.ensemble import ensemble_score
+from calibration.console import use_utf8_console
+from calibration.dataset import add_source_arguments, describe, load_samples, ml_feature_matrix
+from calibration.metrics import average_precision, recall_at_budget, roc_auc
+from calibration.rules import default_rules
+
+BUDGETS = (0.001, 0.005, 0.01)
 
 
-def _metrics(y_true: list, y_pred: list) -> dict:
-    tp = sum(1 for t, p in zip(y_true, y_pred) if t and p)
-    fp = sum(1 for t, p in zip(y_true, y_pred) if not t and p)
-    fn = sum(1 for t, p in zip(y_true, y_pred) if t and not p)
-    tn = sum(1 for t, p in zip(y_true, y_pred) if not t and not p)
-    prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
-    f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
-    return {"precision": prec, "recall": rec, "fpr": fpr, "f1": f1}
+def _report(name: str, scores, labels) -> None:
+    budgets = "  ".join(f"{recall_at_budget(scores, labels, b):>9.3f}" for b in BUDGETS)
+    print(f"  {name:<20}{roc_auc(scores, labels):>9.3f}{average_precision(scores, labels):>9.4f}  {budgets}")
 
 
-def _row(label: str, threshold: str, m: dict) -> str:
-    return (
-        f"{label:<22} {threshold:>8}  "
-        f"{m['precision']:>9.3f}  {m['recall']:>8.3f}  "
-        f"{m['fpr']:>8.3f}  {m['f1']:>8.3f}"
-    )
+def _levels(name: str, scores, labels) -> None:
+    medium = sum(1 for s in scores if RISK_LEVEL_MEDIUM <= s < RISK_LEVEL_HIGH)
+    high = sum(1 for s in scores if s >= RISK_LEVEL_HIGH)
+    high_fraud = sum(1 for s, y in zip(scores, labels) if s >= RISK_LEVEL_HIGH and y)
+    print(f"  {name:<20}MEDIUM {medium:>10,}건   HIGH {high:>10,}건 (그중 사기 {high_fraud:,})")
 
 
 def main() -> None:
-    db = SessionLocal()
-    ifm = IFModel.load()
+    use_utf8_console()
+    parser = argparse.ArgumentParser(description="운영 엔진으로 잰 룰/IF/앙상블 비교")
+    add_source_arguments(parser)
+    args = parser.parse_args()
 
-    try:
-        txs = (
-            db.query(models.Transaction)
-            .filter(models.Transaction.is_fraud.isnot(None))
-            .all()
-        )
-        if not txs:
-            print("레이블된 거래가 없습니다. load_paysim.py를 먼저 실행하세요.")
-            return
+    samples = load_samples(args.source, args.csv, args.limit)
+    labels = [s.label for s in samples]
+    rules = default_rules()
+    rule_scores = [evaluate_signals(s.signals, rules)[0] for s in samples]
 
-        rules = get_active_rules(db)
-        y_true = [bool(tx.is_fraud) for tx in txs]
+    print("=" * 78)
+    print(describe(samples))
+    print("=" * 78)
+    header = "  ".join(f"recall@{b:.1%}".rjust(9) for b in BUDGETS)
+    print(f"\n  {'방법':<20}{'ROC-AUC':>9}{'PR-AUC':>9}  {header}")
+    _report("룰 단독", rule_scores, labels)
 
-        print(f"평가 중: {len(txs):,}건 (사기 {sum(y_true)}건, {sum(y_true)/len(txs)*100:.2f}%)...")
+    model = IFModel.load()
+    ensemble = None
+    if model is None:
+        print("\n  IF 모델 없음 — 룰 단독만 출력 (python scripts/train_model.py 먼저 실행)")
+    else:
+        if_scores = model.anomaly_scores(ml_feature_matrix(samples)).tolist()
+        ensemble = [ensemble_score(r, i) for r, i in zip(rule_scores, if_scores)]
+        _report("Isolation Forest", if_scores, labels)
+        _report(f"앙상블 (α={RULE_ALPHA})", ensemble, labels)
+        print("  * IF는 표본 내 평가(같은 데이터로 학습) — 낙관적인 값이다")
 
-        rule_scores, if_scores, ens_scores = [], [], []
-        for i, tx in enumerate(txs):
-            if i % 10_000 == 0 and i > 0:
-                print(f"  {i:,}/{len(txs):,}")
-            r, _, _ = evaluate_transaction(tx.amount, tx.account_from, db, rules)
-            rule_scores.append(r)
-
-            if ifm is not None:
-                feat = extract_features(tx, db, velocity=0)
-                s = ifm.anomaly_score(feat)
-                if_scores.append(s)
-                ens_scores.append(ensemble_score(r, s))
-
-        header = f"\n{'방법':<22} {'임계값':>8}  {'Precision':>9}  {'Recall':>8}  {'FPR':>8}  {'F1':>8}"
-        sep = "─" * 72
-        print(header)
-        print(sep)
-
-        for thresh in [40.0, 55.0, 70.0]:
-            y_pred = [s >= thresh for s in rule_scores]
-            print(_row("룰 엔진", f"{thresh:.0f}", _metrics(y_true, y_pred)))
-
-        if ifm and if_scores:
-            print(sep)
-            for thresh in [0.35, 0.45, 0.55, 0.65]:
-                y_pred = [s >= thresh for s in if_scores]
-                print(_row("Isolation Forest", f"{thresh:.2f}", _metrics(y_true, y_pred)))
-
-            print(sep)
-            for thresh in [40.0, 55.0, 70.0]:
-                y_pred = [s >= thresh for s in ens_scores]
-                print(_row("앙상블(α=0.5)", f"{thresh:.0f}", _metrics(y_true, y_pred)))
-        else:
-            print("\nIsolation Forest 모델 미학습 — rule 베이스라인만 출력")
-            print("  → python scripts/train_model.py 실행 후 재시도")
-
-        print(sep)
-        print(f"\n* 같은 Recall 기준에서 앙상블의 FPR이 낮을수록 ML 레이어의 기여가 크다.")
-
-    finally:
-        db.close()
+    print(f"\n현행 등급 경계({RISK_LEVEL_MEDIUM:.0f}/{RISK_LEVEL_HIGH:.0f})에 걸리는 거래")
+    _levels("룰 단독", rule_scores, labels)
+    if ensemble is not None:
+        _levels(f"앙상블 (α={RULE_ALPHA})", ensemble, labels)
 
 
 if __name__ == "__main__":
