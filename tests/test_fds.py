@@ -167,7 +167,7 @@ def test_stats_structure(client, risk_auth, staff_auth):
         "total_alerts", "pending_review", "detection_rate_pct",
         "false_positive_rate_pct", "alerts_by_rule",
         "avg_risk_score", "high_risk_count", "high_risk_rate_pct",
-        "str_total", "ctr_total", "pending_compliance",
+        "str_total", "pending_compliance",
         "active_rule_count", "triggered_rule_types", "rule_coverage_pct",
     }
     assert required_fields <= body.keys()

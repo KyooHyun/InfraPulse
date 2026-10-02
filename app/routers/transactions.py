@@ -9,7 +9,7 @@ from ..crud import create_transaction, get_transactions
 from ..db import get_db
 from .. import ledger
 from ..fds_engine import get_active_rules, evaluate_transaction, RISK_LEVEL_HIGH
-from ..report_generator import try_create_ctr, create_str
+from ..report_generator import create_str
 from ..metrics import (
     anomaly_event_total,
     anomaly_high_value_total,
@@ -189,10 +189,9 @@ def transfer(
             reason=f"고위험 이상거래 탐지 — 위험점수: {effective_score:.1f}, 룰: {', '.join(triggered)}",
         )
 
-    # 6. CTR: 1천만원 이상 → 자동 고액현금거래 보고
-    try_create_ctr(db, transaction)
+    # CTR은 현금 거래 대상이라 이체 경로에서는 만들지 않는다 (report_generator.py 참고)
 
-    # 7. 감사 로그
+    # 6. 감사 로그
     audit.log_event(
         db,
         action="CREATE_TRANSACTION",

@@ -145,11 +145,11 @@ class FdsDecision(Base):
 
 
 class ComplianceReport(Base):
-    """특정금융정보법 기반 자동 보고서 — STR(의심거래) / CTR(고액현금거래)."""
+    """특정금융정보법 보고서 — STR(의심거래). CTR은 현금 거래 유형 추가 시 구현."""
     __tablename__ = "compliance_reports"
 
     id = Column(Integer, primary_key=True, index=True)
-    report_type = Column(String(32), nullable=False)  # STR | CTR
+    report_type = Column(String(32), nullable=False)  # STR
     transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=False)
     account_from = Column(String(64), nullable=False)
     account_to = Column(String(64), nullable=False)

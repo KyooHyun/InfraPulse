@@ -270,7 +270,6 @@ class FdsStatsOut(BaseModel):
 
     # 컴플라이언스 보고서
     str_total: int
-    ctr_total: int
     pending_compliance: int
 
     # 룰 커버리지 — 활성 룰 중 실제 알림을 발생시킨 룰 유형 비율

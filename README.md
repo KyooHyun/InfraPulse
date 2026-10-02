@@ -11,7 +11,7 @@
 |------|-----------|
 | FDS 의무 운영 | 전자금융감독규정 제37조의2 |
 | STR (의심거래보고) | 특정금융정보법 제4조 |
-| CTR (고액현금거래보고, 1천만원↑) | 특정금융정보법 제4조의2 |
+| CTR (고액현금거래보고) — **미구현**, 아래 참고 | 특정금융정보법 제4조의2 |
 | KYC (고객확인제도) | 특정금융정보법 제5조의2 |
 | 감사 추적 보존 | 전자금융거래법 제22조 |
 
@@ -23,7 +23,7 @@
                   ┌─────────────────────────────────────┐
                   │         transaction-api              │
                   │  FastAPI  │  FDS Engine  │  Reports  │
-                  │  JWT/RBAC │  Rule + IF   │  STR/CTR  │
+                  │  JWT/RBAC │  Rule + IF   │    STR    │
                   └────┬──────────────┬──────────────────┘
                        │              │
               ┌────────▼──┐    ┌──────▼──────┐
@@ -174,10 +174,13 @@ hybrid_score = α × rule_score + (1-α) × if_score
 ```
 
 ### 5. 컴플라이언스 자동 보고
-- **CTR**: 1천만원 이상 거래 발생 즉시 자동 생성
 - **STR**: 위험점수 70점 이상 거래에 자동 생성 (ML 앙상블이 켜진 구성에서만 도달 가능 —
   판정에 쓰는 점수는 FDS 알림에 기록되는 점수와 동일하다)
-- 각 보고서에 고유 번호 부여 (`CTR-20260605-A1B2C3D4`)
+- **CTR — 미구현**: CTR 대상은 **현금** 입출금이고, 기준은 **동일인 1거래일 합산** 1천만원
+  이상이다. 이 시스템에는 계좌이체만 있고 계좌를 고객 단위로 묶는 식별자도 없다. 예전에는
+  이체 한 건이 1천만원 이상이면 CTR을 만들었는데, 제도와 다른 동작이라 제거했다. 현금 거래
+  유형과 고객 식별자(KYC ↔ 계좌)를 추가할 때 구현한다.
+- 각 보고서에 고유 번호 부여 (`STR-20260605-A1B2C3D4`)
 - RISK_OFFICER가 SUBMITTED 처리 (실제 환경에서는 KoFIU API 연동)
 
 ### 6. 불변 감사 추적 (Audit Trail) — SHA-256 해시 체인
@@ -227,7 +230,7 @@ Swagger UI: **http://localhost:8000/docs**
 | `GET` | `/fds/comparison` | 룰 단독 vs 룰+IF 앙상블 성능 비교 | RISK_OFFICER |
 | `GET` | `/fds/rules` | FDS 룰 목록 | ADMIN |
 | `PUT` | `/fds/rules/{id}` | FDS 룰 수정 | ADMIN |
-| `GET` | `/compliance/reports` | STR/CTR 보고서 목록 | RISK_OFFICER |
+| `GET` | `/compliance/reports` | STR 보고서 목록 | RISK_OFFICER |
 | `POST` | `/compliance/reports/{id}/submit` | 보고서 제출 처리 | RISK_OFFICER |
 | `POST` | `/kyc` | KYC 등록 | STAFF |
 | `GET` | `/kyc/{account_id}` | KYC 조회 | RISK_OFFICER |
@@ -255,7 +258,7 @@ Swagger UI: **http://localhost:8000/docs**
 | `fds_rules` | FDS 탐지 룰 (DB 기반 관리) |
 | `fds_alerts` | FDS 이상거래 알림 |
 | `fds_decisions` | 알림 검토 결정 이력 |
-| `compliance_reports` | STR/CTR 보고서 |
+| `compliance_reports` | STR 보고서 |
 | `kyc_records` | 고객확인 정보 |
 
 ---
@@ -343,7 +346,7 @@ Grafana 로그인: `admin` / `admin`
 포함 패널:
 - 총 거래 건수 / 실패 건수 / FDS 알림 / 로그인 실패
 - 고액거래·로그인 실패 이상징후
-- STR / CTR 보고서 건수
+- STR 보고서 건수
 - FDS 알림 유형별 추이 (timeseries)
 - 거래 위험점수 분포 (p50 / p95)
 - API 응답 시간 (p95)

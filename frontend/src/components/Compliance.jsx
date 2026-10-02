@@ -10,12 +10,6 @@ function fmtAmt(amount) {
 }
 
 const TYPE_INFO = {
-  CTR: {
-    label: 'CTR',
-    desc: '고액현금거래보고',
-    badge: 'badge-info',
-    law: '특금법 제4조의2',
-  },
   STR: {
     label: 'STR',
     desc: '의심거래보고',
@@ -59,7 +53,6 @@ export default function Compliance({ user }) {
     }
   }
 
-  const ctrCount = reports.filter(r => r.report_type === 'CTR').length
   const strCount = reports.filter(r => r.report_type === 'STR').length
   const pendingCount = reports.filter(r => r.status === 'PENDING').length
 
@@ -76,10 +69,6 @@ export default function Compliance({ user }) {
           <div className="stat-label">전체 보고서</div>
           <div className="stat-value">{reports.length}</div>
         </div>
-        <div className="stat-card">
-          <div className="stat-label">CTR (고액거래)</div>
-          <div className="stat-value">{ctrCount}</div>
-        </div>
         <div className="stat-card red">
           <div className="stat-label">STR (의심거래)</div>
           <div className="stat-value">{strCount}</div>
@@ -93,14 +82,13 @@ export default function Compliance({ user }) {
       <div className="card">
         <div className="card-title">
           📋 준법감시 보고서
-          <span>특정금융정보법 제4조·제4조의2</span>
+          <span>특정금융정보법 제4조</span>
           <div style={{ marginLeft: 'auto' }}>
             <button className="btn btn-ghost btn-sm" onClick={load}>새로고침</button>
           </div>
         </div>
 
         <div style={{ padding: '10px 0 14px', fontSize: 12, color: '#64748b', display: 'flex', gap: 24 }}>
-          <span>🔵 <b>CTR</b> — 1천만원 이상 현금거래 자동 보고 (특금법 제4조의2)</span>
           <span>🔴 <b>STR</b> — 위험점수 70 이상 의심거래 보고 (특금법 제4조)</span>
         </div>
 
@@ -168,12 +156,12 @@ export default function Compliance({ user }) {
         <div className="card-title" style={{ fontSize: 13 }}>📌 준법감시 규정 안내</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
           <div>
-            <p style={{ fontWeight: 600, color: '#1e3a5f', marginBottom: 8 }}>CTR (고액현금거래보고)</p>
+            <p style={{ fontWeight: 600, color: '#1e3a5f', marginBottom: 8 }}>CTR (고액현금거래보고) — 미구현</p>
             <ul style={{ lineHeight: 1.8, paddingLeft: 16 }}>
               <li>근거: 특정금융정보법 제4조의2</li>
-              <li>기준: 1거래일 합산 1천만원 초과 현금거래</li>
-              <li>제출처: 금융정보분석원 (KoFIU)</li>
-              <li>제출기한: 거래 익영업일 이내</li>
+              <li>기준: 동일인 1거래일 합산 1천만원 이상 현금 입출금</li>
+              <li>본 시스템: 계좌이체만 있어 대상 거래 없음</li>
+              <li>현금 거래 유형·고객 식별자 추가 시 구현 예정</li>
             </ul>
           </div>
           <div>

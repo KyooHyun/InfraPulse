@@ -12,7 +12,7 @@ from .. import models, audit
 router = APIRouter(prefix="/compliance", tags=["컴플라이언스"])
 
 
-@router.get("/reports", response_model=List[ComplianceReportOut], summary="보고서 목록 (STR/CTR)")
+@router.get("/reports", response_model=List[ComplianceReportOut], summary="보고서 목록 (STR)")
 def list_reports(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(require_role("RISK_OFFICER", "ADMIN")),

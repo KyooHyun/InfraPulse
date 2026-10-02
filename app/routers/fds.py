@@ -187,9 +187,6 @@ def get_stats(
     str_total = db.query(models.ComplianceReport).filter(
         models.ComplianceReport.report_type == "STR"
     ).count()
-    ctr_total = db.query(models.ComplianceReport).filter(
-        models.ComplianceReport.report_type == "CTR"
-    ).count()
     pending_compliance = db.query(models.ComplianceReport).filter(
         models.ComplianceReport.status == "PENDING"
     ).count()
@@ -219,7 +216,6 @@ def get_stats(
         high_risk_count=high_risk,
         high_risk_rate_pct=high_risk_rate,
         str_total=str_total,
-        ctr_total=ctr_total,
         pending_compliance=pending_compliance,
         active_rule_count=active_rules,
         triggered_rule_types=triggered_types,
