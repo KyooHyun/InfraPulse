@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Boolean, Column, ForeignKey, Integer, String, Float, Numeric, DateTime, Text, func,
+    Boolean, Column, ForeignKey, Integer, String, Float, Numeric, DateTime, Text, UniqueConstraint, func,
 )
 from .db import Base
 
@@ -80,6 +80,31 @@ class AuditLog(Base):
     checksum = Column(String(64), nullable=True)       # SHA-256 체인 해시
     prev_checksum = Column(String(64), nullable=True)  # 직전 행의 checksum
     event_time = Column(String(32), nullable=True)     # 해시에 들어간 ISO-8601 UTC
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class IdempotencyKey(Base):
+    """이체 요청의 멱등성 키 — 같은 요청이 재전송돼도 출금은 한 번만 일어난다.
+
+    키 행은 잔액 변경·거래 기록과 **같은 DB 트랜잭션**에서 커밋된다. 따로 커밋하면 "키는
+    기록됐는데 이체는 안 된"(또는 그 반대) 상태가 생긴다. 예외로 롤백되면 키도 남지 않으므로
+    클라이언트는 같은 키로 다시 시도할 수 있다.
+
+    동시에 같은 키로 들어온 요청을 하나로 만드는 것은 (user_id, key) 유니크 제약이다. 이체 경로의
+    사전 조회는 불필요한 처리를 줄이는 최적화일 뿐 보장이 아니다 — MySQL REPEATABLE READ에서는
+    트랜잭션 스냅샷 때문에 다른 요청이 방금 커밋한 키가 조회에 안 보일 수 있다.
+
+    request_hash: 계좌·금액·통화의 해시. 같은 키로 다른 내용을 보내면 거부한다(409).
+    transaction_id: 확정된 결과. 잔액 부족·대외계 실패도 거래로 기록되므로 그대로 재현된다.
+    """
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (UniqueConstraint("user_id", "key", name="uq_idempotency_user_key"),)
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    key = Column(String(64), nullable=False)
+    request_hash = Column(String(64), nullable=False)
+    transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

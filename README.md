@@ -28,7 +28,7 @@
                        │              │
               ┌────────▼──┐    ┌──────▼──────┐
               │   MySQL   │    │  Prometheus  │
-              │ (10개 테이블)│    │  (메트릭 수집)│
+              │ (11개 테이블)│    │  (메트릭 수집)│
               └───────────┘    └──────┬───────┘
                                       │
                                ┌──────▼───────┐
@@ -108,6 +108,27 @@ AssertionError: 잔액으로 감당 가능한 건수(3)보다 많이 성공했�
 > 행 잠금이 없어 SQLAlchemy가 이 구문을 조용히 버리므로, `conftest.py`가
 > `BEGIN IMMEDIATE`로 같은 직렬화 효과를 만든다. `FOR UPDATE` 구문이 실제로 SQL에
 > 실린다는 것은 `test_lock_query_emits_for_update`가 따로 검증한다.
+
+**멱등성 키 — 재전송돼도 출금은 한 번** (`app/idempotency.py`, `Idempotency-Key` 헤더)
+
+네트워크 타임아웃 뒤 클라이언트가 같은 이체를 다시 보내면, 잠금은 두 요청을 차례로 실행할 뿐이라
+두 번 출금된다. 그래서 이체마다 고유한 키를 받아 처음 결과를 기억한다.
+
+- **원자성**: 키 행은 잔액 변경·거래 기록과 **같은 커밋**에 들어간다. 처리 중 예외로 롤백되면 키도 남지 않아
+  같은 키로 다시 시도할 수 있다.
+- **동시 요청**: 보장은 `(user_id, key)` 유니크 제약이다. 같은 키의 요청이 동시에 오면 하나만 커밋되고, 나머지는
+  제약 위반 → 롤백(잔액 변경도 함께) → 먼저 확정된 거래를 돌려받는다. 잠금 전·후의 사전 조회는 최적화일 뿐이다
+  — MySQL REPEATABLE READ에서는 스냅샷 때문에 방금 커밋된 키가 조회에 안 보일 수 있다.
+- **키 재사용**: 계좌·금액·통화의 해시를 함께 저장한다. 같은 키로 내용이 다른 요청은 409.
+- **확정된 실패도 저장한다**: 잔액 부족·대외계 실패도 거래로 기록되므로, 나중에 잔액이 생겨도 같은 키는 같은
+  실패를 돌려준다. 재시도로 결과가 바뀌면 클라이언트는 처음 요청의 결과를 알 수 없다.
+- 재현된 응답에는 `Idempotent-Replayed: true` 헤더가 붙는다. 키는 선택이다(없으면 매 요청이 새 이체) — 운영
+  클라이언트는 반드시 보내야 한다.
+
+**검증** — `tests/test_idempotency.py`: 같은 키로 12건을 동시에 보내면 출금은 정확히 1건, 응답은 12건 모두
+같은 거래다. 대조군 두 개로 이것이 무엇 때문에 성립하는지 보인다.
+  - 키 기록을 끄면 같은 이체가 **12번** 출금된다 (경합이 실제로 일어났다는 증거)
+  - 사전 조회를 전부 무력화해도 1건이다 (보장이 조회가 아니라 유니크 제약에서 나온다는 증거)
 
 ### 2. DB 기반 FDS 룰 엔진
 임계값·가중치를 DB에서 관리하여 서비스 재시작 없이 변경 가능. 모든 룰은 **이체 실행 전에 알 수 있는 정보**만 쓴다.
@@ -274,7 +295,7 @@ Swagger UI: **http://localhost:8000/docs**
 |--------|------|------|----------|
 | `POST` | `/auth/token` | JWT 토큰 발급 | 없음 |
 | `GET` | `/auth/me` | 내 계정 정보 | 모든 사용자 |
-| `POST` | `/transactions/transfer` | 계좌 이체 (계좌 행 잠금 + 잔액 검증) | STAFF |
+| `POST` | `/transactions/transfer` | 계좌 이체 (계좌 행 잠금 + 잔액 검증, `Idempotency-Key` 헤더) | STAFF |
 | `GET` | `/transactions` | 거래 목록 | STAFF |
 | `GET` | `/transactions/accounts/{account_id}` | 계좌 잔액 조회 | STAFF |
 | `GET` | `/fds/alerts` | FDS 알림 목록 | RISK_OFFICER |
@@ -313,6 +334,7 @@ Swagger UI: **http://localhost:8000/docs**
 | `fds_alerts` | FDS 이상거래 알림 |
 | `fds_decisions` | 알림 검토 결정 이력 |
 | `compliance_reports` | STR 보고서 (DRAFT → APPROVED/DISMISSED → SUBMITTED) |
+| `idempotency_keys` | 이체 멱등성 키 — (user_id, key) 유니크, 요청 해시, 확정된 거래 |
 | `kyc_records` | 고객확인 정보 |
 
 ---
@@ -374,11 +396,12 @@ pip install pytest
 pytest tests/ -q
 ```
 
-현재 환경에서 실행한 결과: **97 passed**
+현재 환경에서 실행한 결과: **106 passed**
 
 | 파일 | 건수 | 범위 |
 |---|---:|---|
 | `test_concurrency.py` | 6 | 이체 행 잠금 — 초과 인출·금액 보존·잠금 순서 |
+| `test_idempotency.py` | 9 | 같은 키 동시 12건 → 출금 1건, 키 기록 끄면 12건(대조군), 유니크 제약만으로 보장, 키 재사용 409, 확정 실패 재현, 예외 시 키 롤백 |
 | `test_audit_chain.py` | 12 | 감사 해시 체인 — 수정·중간 삭제·꼬리 삭제 탐지 |
 | `test_calibration.py` | 19 | lift/AUC/IV 지표, 룰 신호 생성, 점수 도달 가능성(룰만으로 HIGH 도달, HIGH의 BALANCE_DRAIN 의존) |
 | `test_fds.py` | 16 | FDS 룰 엔진·위험점수·알림 |

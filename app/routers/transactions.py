@@ -1,13 +1,14 @@
 import logging
 from random import random
-from typing import Dict, List
+from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..crud import create_transaction, get_transactions
 from ..db import get_db
-from .. import ledger
+from .. import idempotency, ledger
 from ..fds_engine import get_active_rules, evaluate_transaction, RISK_LEVEL_HIGH, RISK_LEVEL_MEDIUM
 from ..report_generator import create_str
 from ..metrics import (
@@ -88,10 +89,36 @@ def get_account(
 def transfer(
     req: TransferRequest,
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
+    idempotency_key: Optional[str] = Header(
+        default=None, alias="Idempotency-Key", min_length=1, max_length=idempotency.MAX_KEY_LENGTH,
+        description="이체마다 고유한 키. 같은 키로 재전송하면 이체를 다시 실행하지 않고 처음 결과를 돌려준다.",
+    ),
 ):
     amount = ledger.to_money(req.amount)
+    req_hash = idempotency.request_hash(req) if idempotency_key else None
+
+    def replay_if_seen() -> Optional[models.Transaction]:
+        """같은 키로 이미 확정된 이체가 있으면 그 거래를 돌려준다(Idempotent-Replayed: true)."""
+        if not idempotency_key:
+            return None
+        try:
+            stored = idempotency.stored_result(db, current_user.id, idempotency_key, req_hash)
+        except idempotency.KeyReused:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="같은 Idempotency-Key로 내용이 다른 이체 요청이 왔습니다 — 새 이체에는 새 키를 쓰세요",
+            )
+        if stored is not None:
+            response.headers["Idempotent-Replayed"] = "true"
+        return stored
+
+    # 0. 이미 처리된 키면 FDS 채점·잠금 없이 바로 돌려준다 (최적화 — 보장은 유니크 제약)
+    replayed = replay_if_seen()
+    if replayed is not None:
+        return replayed
 
     # 1. 계좌 확보 — 잠금 구간 밖에서 미리 개설한다 (ledger.ensure_accounts 주석 참고)
     ledger.ensure_accounts(db, (req.account_from, req.account_to), req.currency)
@@ -122,6 +149,14 @@ def transfer(
         sender = accounts[req.account_from]
         receiver = accounts[req.account_to]
 
+        # 잠금을 기다리는 동안 같은 키의 요청이 먼저 커밋했을 수 있다. 같은 계좌를 잠그므로
+        # SQLite(직렬화)에서는 여기서 보인다. MySQL REPEATABLE READ에서는 스냅샷 때문에 안 보일 수
+        # 있고, 그때는 아래 커밋의 유니크 제약 위반이 잡는다.
+        replayed = replay_if_seen()
+        if replayed is not None:
+            db.rollback()   # 잠금 해제
+            return replayed
+
         # 무작위 실패 시뮬레이션 — 잔액과 무관한 대외계 오류를 흉내낸다.
         failure_chance = 0.25 if req.amount > 50_000 else 0.15
         if random() < failure_chance:
@@ -143,7 +178,18 @@ def transfer(
             db, req, tx_status, reason,
             risk_score=risk_score, balances=balances, commit=False,
         )
+        if idempotency_key:
+            # 잔액 변경·거래 기록·키가 한 커밋으로 묶인다 — 셋 중 일부만 남는 상태가 없다.
+            idempotency.record(db, current_user.id, idempotency_key, req_hash, transaction)
         db.commit()
+    except IntegrityError:
+        # 같은 키의 동시 요청이 먼저 커밋했다 — 이 요청의 잔액 변경은 통째로 롤백되고,
+        # 먼저 확정된 결과를 돌려준다. 다른 무결성 오류면 그대로 올린다.
+        db.rollback()
+        replayed = replay_if_seen()
+        if replayed is None:
+            raise
+        return replayed
     except Exception:
         db.rollback()
         raise
