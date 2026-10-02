@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""PaySim CSV → InfraPulse DB 적재.
+"""PaySim CSV → FDS DB 적재.
 
 PaySim 다운로드: https://www.kaggle.com/datasets/ealaxi/paysim1
   (PS_20174392719_1491204439457_log.csv, 약 6.3 M 행)
@@ -88,7 +88,7 @@ def load(csv_path: str, limit: int | None = None) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="PaySim CSV를 InfraPulse DB에 적재한다")
+    parser = argparse.ArgumentParser(description="PaySim CSV를 FDS DB에 적재한다")
     parser.add_argument("csv", help="PaySim CSV 파일 경로")
     parser.add_argument("--limit", type=int, default=None, help="적재 행 수 상한 (테스트용)")
     args = parser.parse_args()

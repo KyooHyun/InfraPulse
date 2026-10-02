@@ -28,7 +28,7 @@
                        │              │
               ┌────────▼──┐    ┌──────▼──────┐
               │   MySQL   │    │  Prometheus  │
-              │  (8개 테이블)│    │  (메트릭 수집)│
+              │ (10개 테이블)│    │  (메트릭 수집)│
               └───────────┘    └──────┬───────┘
                                       │
                                ┌──────▼───────┐
@@ -87,7 +87,7 @@ for account_id in sorted(set(account_ids)):
 일치해야 한다. 이 테스트가 의미 있다는 근거는 **꺼보면 깨진다**는 것이다:
 
 ```
-$ INFRAPULSE_TEST_NO_LOCK=1 pytest tests/test_concurrency.py
+$ FDS_TEST_NO_LOCK=1 pytest tests/test_concurrency.py
 AssertionError: 잔액으로 감당 가능한 건수(3)보다 많이 성공했다: 11
 ```
 
@@ -320,28 +320,34 @@ python scripts/evaluate.py                       # 룰 vs ML vs 앙상블 평가
 # 의존성 설치
 pip install pytest
 
-# 전체 테스트 실행 (SQLite 인메모리 DB 사용 — Docker 불필요)
+# 전체 테스트 실행 (SQLite 파일 DB ./test.db 사용 — Docker 불필요)
 pytest tests/ -q
 ```
 
-현재 환경에서 실행한 결과: **80 passed**
+현재 환경에서 실행한 결과: **86 passed**
 
 | 파일 | 건수 | 범위 |
 |---|---:|---|
 | `test_concurrency.py` | 6 | 이체 행 잠금 — 초과 인출·금액 보존·잠금 순서 |
 | `test_audit_chain.py` | 12 | 감사 해시 체인 — 수정·중간 삭제·꼬리 삭제 탐지 |
 | `test_calibration.py` | 18 | lift/AUC/IV 지표, 룰 신호 생성, 점수 도달 가능성 |
-| `test_fds.py` | 15 | FDS 룰 엔진·위험점수·알림 |
-| `test_kyc.py` / `test_transactions.py` / `test_auth.py` / `test_compliance.py` | 29 | KYC, 거래, 인증·RBAC, STR/CTR |
+| `test_fds.py` | 16 | FDS 룰 엔진·위험점수·알림 |
+| `test_kyc.py` / `test_transactions.py` / `test_auth.py` / `test_compliance.py` | 34 | KYC, 거래, 인증·RBAC, STR 검토 흐름·이체 CTR 미생성 |
 
 ---
 
 ## 향후 계획
-- **드리프트 모니터링**: 학습 데이터 분포 대비 운영 거래 분포를 비교하여 개념 드리프트를 경고.
-- **모델 버전 관리**: MLflow 또는 유사 도구로 모델 아티팩트, 하이퍼파라미터, 평가 지표를 추적.
-- **추가 이상치 탐지 후보**: 현재는 Isolation Forest 중심; 필요 시 LOF(지역 밀도 기반 이상치 감지)를 비교할 수 있음.
 
-> 위 항목은 로드맵이며, 현재 프로젝트에서는 주로 PaySim 기반 룰 베이스라인과 Isolation Forest 앙상블 검증에 집중합니다.
+우선순위 순. 기능 추가보다 이미 진단한 결함을 고쳐 "진단 → 개선 → 재측정"을 완결하는 것이 먼저다.
+
+1. **탐지 엔진 재측정** — 평가 코드가 실제 엔진의 점수 함수를 import하도록 바꾸고(α는 설정 한 곳),
+   사기 신호 룰(거래 전 잔액 대비 인출 비율 등)을 PaySim에서 시간 분할로 측정한다.
+   알림 예산 기반 임계값, 동일 알림 건수 recall·PR-AUC 비교.
+2. **거래 정합성** — 이체 멱등성 키, Testcontainers MySQL로 `FOR UPDATE` 동시성 실검증
+   (데드락 재시도·락 타임아웃 포함), 복식부기 원장과 대사 배치, 부하 테스트.
+3. **CTR** — 현금 거래 유형과 고객 식별자 추가 후 동일인 1거래일 합산으로 구현.
+
+드리프트 모니터링, MLflow, LOF는 기본 탐지기가 개선된 뒤로 미룬다.
 
 ## Grafana 대시보드
 

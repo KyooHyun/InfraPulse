@@ -13,7 +13,7 @@
 
 **이 테스트가 의미 있다는 근거** — 직렬화를 끄고 돌리면 실제로 깨진다:
 
-    INFRAPULSE_TEST_NO_LOCK=1 pytest tests/test_concurrency.py
+    FDS_TEST_NO_LOCK=1 pytest tests/test_concurrency.py
 
     AssertionError: 잔액으로 감당 가능한 건수(3)보다 많이 성공했다: 11
     (마지막 숫자는 스케줄링에 따라 매번 달라진다)

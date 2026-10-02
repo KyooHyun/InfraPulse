@@ -46,9 +46,9 @@ TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # FOR UPDATE 구문이 실제로 SQL에 실린다는 것 자체는
 # tests/test_concurrency.py::test_lock_query_emits_for_update 가 따로 검증한다.
 
-# INFRAPULSE_TEST_NO_LOCK=1 로 이 직렬화를 꺼서 "잠금이 없으면 정말 깨지는가"를
+# FDS_TEST_NO_LOCK=1 로 이 직렬화를 꺼서 "잠금이 없으면 정말 깨지는가"를
 # 확인할 수 있다(음성 대조군). tests/test_concurrency.py 상단 주석 참고.
-SERIALIZE_WRITES = os.environ.get("INFRAPULSE_TEST_NO_LOCK") != "1"
+SERIALIZE_WRITES = os.environ.get("FDS_TEST_NO_LOCK") != "1"
 
 
 @event.listens_for(engine, "connect")
