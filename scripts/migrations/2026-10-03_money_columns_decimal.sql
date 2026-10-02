@@ -5,7 +5,11 @@
 -- (원장 accounts.balance는 처음부터 DECIMAL(18,2)라 잔액 자체는 정확했다.)
 --
 -- 주의: 이미 FLOAT로 저장된 값은 이 변환으로 복구되지 않는다 — 잘린 값이 그대로 DECIMAL로 옮겨진다.
--- 정확한 금액이 필요하면 원장(accounts)과 감사 로그(audit_logs.detail의 amount)로 대사해야 한다.
+--   - 거래 기록 안에서는 복구할 수 없다. 이체 전후 잔액 컬럼(balance_*)도 같은 FLOAT라 함께 잘렸다.
+--   - 감사 로그로는 원 단위까지 복구할 수 있다. audit_logs.detail에 "amount=1,234,567" 형식(원 단위 정수,
+--     :,.0f)으로 요청 금액이 남아 있다. 원화 금액은 정수이므로 KRW 거래는 정확히 복구된다(원 미만이 있던
+--     외화 거래는 원 미만을 잃는다). 복구 전에 GET /admin/audit-logs/verify로 체인이 온전한지 먼저 확인한다.
+--   - 계좌 잔액(accounts.balance)은 처음부터 DECIMAL(18,2)라 영향이 없다.
 
 ALTER TABLE transactions
   MODIFY amount              DECIMAL(18,2) NOT NULL,

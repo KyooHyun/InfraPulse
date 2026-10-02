@@ -13,7 +13,7 @@ from sqlalchemy.exc import OperationalError
 
 from app import ledger, models
 from app.config import settings
-from app.metrics import transfer_lock_retry_total
+from app.metrics import transaction_total, transfer_lock_retry_total
 
 from .conftest import TEST_DB, TestingSession, auth_header
 
@@ -187,6 +187,7 @@ def test_transfer_retries_after_real_deadlock(client, staff, monkeypatch):
     a, b = "ACC-MY-RT-A", "ACC-MY-RT-B"
     _fund([(a, OPENING), (b, OPENING)])
     before = _retries("deadlock")
+    transactions_before = transaction_total._value.get()
 
     results = {}
     threads = [
@@ -199,6 +200,9 @@ def test_transfer_retries_after_real_deadlock(client, staff, monkeypatch):
     assert {r.status_code for r in results.values()} == {201}
     assert {r.json()["status"] for r in results.values()} == {"success"}
     assert _retries("deadlock") - before >= 1, "데드락이 재현되지 않았다"
+    # 재시도는 DB 변경을 롤백하지만 Prometheus 카운터는 롤백되지 않는다. 거래 건수는 커밋 뒤에만 세므로
+    # 재시도가 있어도 정확히 2건이어야 한다(재시도 횟수는 transfer_lock_retry_total에 따로 남는다).
+    assert transaction_total._value.get() - transactions_before == 2
     assert _balance(a) + _balance(b) == OPENING * 2
     assert _balance(a) == _balance(b) == OPENING   # 서로 같은 금액을 주고받았다
 

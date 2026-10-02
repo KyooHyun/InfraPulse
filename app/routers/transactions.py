@@ -147,7 +147,7 @@ def transfer(
     }
     rules = get_active_rules(db)
     risk_score, triggered, contributions = evaluate_transaction(
-        req.amount, req.account_from, db, rules,
+        float(amount), req.account_from, db, rules,
         account_to=req.account_to,
         balance_orig_before=pre_balances.get(req.account_from),
         balance_dest_before=pre_balances.get(req.account_to),
@@ -171,7 +171,7 @@ def transfer(
             return replayed, None
 
         # 무작위 실패 시뮬레이션 — 잔액과 무관한 대외계 오류를 흉내낸다.
-        failure_chance = 0.25 if req.amount > 50_000 else 0.15
+        failure_chance = 0.25 if amount > 50_000 else 0.15
         if random() < failure_chance:
             tx_status, reason = "failed", "random failure"
         else:
@@ -301,7 +301,7 @@ def transfer(
         action="CREATE_TRANSACTION",
         entity_type="Transaction",
         entity_id=str(transaction.id),
-        detail=f"amount={req.amount:,.0f}, status={tx_status}, risk_score={risk_score:.1f}",
+        detail=f"amount={amount}, status={tx_status}, risk_score={risk_score:.1f}",   # 원장과 같은 십진 표현
         ip_address=request.client.host if request.client else None,
         user_id=current_user.id,
     )

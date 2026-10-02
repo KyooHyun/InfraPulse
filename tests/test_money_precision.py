@@ -38,3 +38,43 @@ def test_transaction_amount_round_trips_exactly(client, amount):
     finally:
         db.close()
 
+
+
+# ── API 경계 ──────────────────────────────────────────────────────────────────
+
+def test_sub_cent_amount_is_rejected(client, staff_auth):
+    """소수 둘째 자리를 넘는 금액은 거부한다 — 예전에는 float로 받아 원장 쪽에서 조용히 반올림했다."""
+    resp = client.post(
+        "/transactions/transfer",
+        json={"account_from": "ACC-PREC-API1", "account_to": "ACC-PREC-API2", "amount": 100.005, "currency": "KRW"},
+        headers=staff_auth,
+    )
+    assert resp.status_code == 422
+
+
+def test_large_amount_is_exact_from_request_to_ledger_and_audit(client, staff_auth, admin_auth):
+    """유효숫자 15자리 금액이 요청 → 거래 기록 → 응답 → 감사 로그까지 그대로 간다.
+
+    잔액이 부족해 이체 자체는 거절되지만, 거절도 거래로 기록되므로 금액이 정확한지 볼 수 있다.
+    """
+    amount = 1_234_567_890_123.45
+    resp = client.post(
+        "/transactions/transfer",
+        json={"account_from": "ACC-PREC-API3", "account_to": "ACC-PREC-API4", "amount": amount, "currency": "KRW"},
+        headers=staff_auth,
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["amount"] == amount
+
+    db = TestingSession()
+    try:
+        assert db.get(models.Transaction, body["id"]).amount == amount
+        entry = (
+            db.query(models.AuditLog)
+            .filter(models.AuditLog.entity_type == "Transaction", models.AuditLog.entity_id == str(body["id"]))
+            .one()
+        )
+        assert "amount=1234567890123.45" in entry.detail   # 예전에는 원 미만을 버린 형식(:,.0f)이었다
+    finally:
+        db.close()

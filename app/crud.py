@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from . import models, schemas
+from . import ledger, models, schemas
 
 
 def create_transaction(
@@ -20,7 +20,7 @@ def create_transaction(
     transaction = models.Transaction(
         account_from=tx_in.account_from,
         account_to=tx_in.account_to,
-        amount=tx_in.amount,
+        amount=ledger.to_money(tx_in.amount),   # 원장이 옮긴 금액과 같은 값
         currency=tx_in.currency,
         status=status,
         reason=reason,

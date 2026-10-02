@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ── 거래 ──────────────────────────────────────────────────────────────────────
@@ -15,12 +15,15 @@ _ALLOWED_CURRENCIES = {"KRW", "USD", "EUR", "JPY"}
 class TransferRequest(BaseModel):
     account_from: str
     account_to: str
-    amount: float
+    # 금액은 Decimal로 받는다 — JSON 숫자를 float로 거치지 않고 십진수로 파싱한다.
+    # 소수 둘째 자리를 넘는 금액(100.005)은 거부한다. 예전에는 float로 받아 원장 쪽에서 조용히
+    # 반올림(100.01)했고, 거래 기록에는 반올림 전 값이 들어가 DB가 따로 반올림해 둘이 어긋날 수 있었다.
+    amount: Decimal = Field(max_digits=18, decimal_places=2)
     currency: str = "KRW"
 
     @field_validator("amount")
     @classmethod
-    def amount_positive(cls, v: float) -> float:
+    def amount_positive(cls, v: Decimal) -> Decimal:
         if v <= 0:
             raise ValueError("거래 금액은 0보다 커야 합니다")
         return v
