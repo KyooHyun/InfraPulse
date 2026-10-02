@@ -130,6 +130,34 @@ AssertionError: 잔액으로 감당 가능한 건수(3)보다 많이 성공했�
   - 키 기록을 끄면 같은 이체가 **12번** 출금된다 (경합이 실제로 일어났다는 증거)
   - 사전 조회를 전부 무력화해도 1건이다 (보장이 조회가 아니라 유니크 제약에서 나온다는 증거)
 
+**실제 MySQL에서 검증** (Testcontainers, MySQL 8.0 — REPEATABLE READ)
+
+위 SQLite 테스트는 `BEGIN IMMEDIATE`로 DB 전체를 직렬화해 행 잠금을 흉내낸 것이다. `FDS_TEST_DB=mysql`이면 같은
+테스트가 운영과 같은 MySQL 컨테이너 위에서 **그대로** 돈다. 여기서 처음으로 `FOR UPDATE` 주장이 실제 엔진에서 확인됐다.
+
+| 확인한 것 | 결과 |
+|---|---|
+| 동시 이체 12건 — 초과 인출 없음, 금액 보존 (`test_concurrency.py`) | 통과 |
+| 같은 멱등성 키 동시 12건 — 출금 1건 (`test_idempotency.py`, REPEATABLE READ 스냅샷에서도 유니크 제약이 보장) | 통과 |
+| **대조군: FOR UPDATE를 빼면** 같은 시나리오에서 초과 인출이 일어난다 | 재현됨 |
+| **데드락: 계좌 정렬을 끄고** A→B·B→A를 교차로 잠그면 MySQL이 1213으로 하나를 죽인다 / 정렬하면 데드락 없음 | 재현됨 / 없음 |
+| 실제 데드락이 난 이체 — 재시도로 두 건 모두 성공, 금액 보존 | 통과 |
+| 다른 트랜잭션이 계좌를 쥐고 있으면 잠금 대기 초과(1205) → 재시도 → 503, 출금 없음 → 풀린 뒤 같은 키로 성공 | 통과 |
+| 테스트 전체(117건) | 통과 |
+
+- **잠금 충돌 처리**: 데드락(1213)·잠금 대기 초과(1205)는 MySQL이 트랜잭션을 롤백한 것이라, 처음부터 다시 실행해도
+  이중 출금이 없다. 지수 백오프로 최대 3회 재시도(`TRANSFER_LOCK_RETRIES`)하고, 그래도 안 되면 503을 돌려준다 —
+  클라이언트는 같은 멱등성 키로 다시 보내면 된다. 잠금 대기 상한은 InnoDB 기본 50초 대신 5초
+  (`MYSQL_LOCK_WAIT_TIMEOUT_SECONDS`). 재시도 횟수는 `transfer_lock_retry_total{reason}` 메트릭으로 남는다.
+- **MySQL에서 처음 드러난 버그 — 거래 금액이 잘려 기록됐다.** 거래·보고서의 금액·잔액 컬럼이 SQLAlchemy `Float`였는데,
+  MySQL에서는 단정밀도 FLOAT이고 유효숫자 6자리로 돌아온다. **1,234,567원 → 1,234,570원, 12,345.67원 → 12,345.70원.**
+  SQLite는 8바이트 실수라 지금까지 모든 테스트가 통과했다. 원장(`accounts.balance`)은 처음부터 `NUMERIC(18,2)`라 잔액
+  자체는 정확했지만, 거래 기록과 STR 보고서의 금액이 틀렸다. 금액은 `NUMERIC(18,2)`, 점수·임계값은 `DOUBLE`로 바꿨다
+  (`tests/test_money_precision.py` — `Float`로 되돌리면 MySQL에서 실패함을 확인). 기존 DB는
+  `scripts/migrations/2026-10-03_money_columns_decimal.sql`로 바꾸되, 이미 잘린 값은 복구되지 않는다.
+- **부하 테스트 때 측정할 것**: 감사 로그 해시 체인은 모든 기록이 `audit_chain_head` 한 행을 `FOR UPDATE`로 거쳐 간다.
+  이체마다 감사 로그를 남기므로 MySQL에서 전역 직렬화 지점이 된다. 지금은 고치지 않고 병목 여부를 잰다.
+
 ### 2. DB 기반 FDS 룰 엔진
 임계값·가중치를 DB에서 관리하여 서비스 재시작 없이 변경 가능. 모든 룰은 **이체 실행 전에 알 수 있는 정보**만 쓴다.
 
@@ -394,13 +422,21 @@ pip install pytest
 
 # 전체 테스트 실행 (SQLite 파일 DB ./test.db 사용 — Docker 불필요)
 pytest tests/ -q
+
+# 같은 테스트를 실제 MySQL 8.0 컨테이너에서 (Docker 필요, pip install "testcontainers[mysql]")
+FDS_TEST_DB=mysql pytest tests/ -q
 ```
 
-현재 환경에서 실행한 결과: **106 passed**
+현재 환경에서 실행한 결과: SQLite **111 passed, 6 skipped** (MySQL 전용 테스트는 건너뜀) / MySQL **117 passed**
+
+> Windows + Python 3.14에서는 docker SDK가 named pipe에 연결하지 못해(`NpipeSocket` 비호환) Testcontainers가 뜨지
+> 않는다. MySQL 테스트는 Python 3.13 가상환경에서 돌렸다.
 
 | 파일 | 건수 | 범위 |
 |---|---:|---|
 | `test_concurrency.py` | 6 | 이체 행 잠금 — 초과 인출·금액 보존·잠금 순서 |
+| `test_mysql_locking.py` | 6 | **MySQL 전용** — FOR UPDATE 제거 시 초과 인출(대조군), 정렬 없는 잠금의 데드락 재현, 데드락 재시도, 잠금 대기 초과 → 503 |
+| `test_money_precision.py` | 5 | 거래 금액이 저장 후에도 정확한가 (MySQL FLOAT 잘림 회귀) |
 | `test_idempotency.py` | 9 | 같은 키 동시 12건 → 출금 1건, 키 기록 끄면 12건(대조군), 유니크 제약만으로 보장, 키 재사용 409, 확정 실패 재현, 예외 시 키 롤백 |
 | `test_audit_chain.py` | 12 | 감사 해시 체인 — 수정·중간 삭제·꼬리 삭제 탐지 |
 | `test_calibration.py` | 19 | lift/AUC/IV 지표, 룰 신호 생성, 점수 도달 가능성(룰만으로 HIGH 도달, HIGH의 BALANCE_DRAIN 의존) |
@@ -418,8 +454,9 @@ pytest tests/ -q
 1. **탐지 엔진** — 완료(여기서 마무리): 평가 코드가 운영 엔진을 import, 시간 분할 평가, IF 피처를 거래 전 정보로 제한,
    룰을 사기 신호로 교체(가중치는 데이터로 결정), 알림 임계값 매일 갱신. 남은 것: 원화 운영 데이터로 룰 재보정 —
    특히 HIGH가 의존하는 BALANCE_DRAIN. 모델 종류·앙상블 방식은 더 파고들지 않는다.
-2. **거래 정합성** — 이체 멱등성 키, Testcontainers MySQL로 `FOR UPDATE` 동시성 실검증
-   (데드락 재시도·락 타임아웃 포함), 복식부기 원장과 대사 배치, 부하 테스트.
+2. **거래 정합성** — 완료: 이체 멱등성 키, Testcontainers MySQL로 `FOR UPDATE` 동시성 실검증(데드락 재현·재시도,
+   잠금 대기 초과). 다음: 복식부기 원장과 대사 배치, 부하 테스트(이체 TPS·p95, 동기 채점의 지연 기여,
+   `audit_chain_head` 병목).
 3. **CTR** — 현금 거래 유형과 고객 식별자 추가 후 동일인 1거래일 합산으로 구현.
 
 드리프트 모니터링, MLflow, LOF는 기본 탐지기가 개선된 뒤로 미룬다.
