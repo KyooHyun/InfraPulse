@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..crud import create_transaction, get_transactions
 from ..db import get_db
-from .. import idempotency, ledger
+from .. import holds, idempotency, ledger
 from ..fds_engine import get_active_rules, evaluate_transaction, RISK_LEVEL_HIGH, RISK_LEVEL_MEDIUM
 from ..report_generator import create_str
 from ..metrics import (
@@ -17,14 +17,15 @@ from ..metrics import (
     anomaly_high_value_total,
     anomaly_velocity_total,
     fds_alert_total,
+    transfer_hold_total,
     transfer_lock_retry_total,
     risk_score_histogram,
     transaction_failed_total,
     transaction_total,
 )
-from ..schemas import AccountOut, TransactionOut, TransferRequest
+from ..schemas import AccountOut, HoldDecisionCreate, TransactionOut, TransferRequest
 from ..config import settings
-from ..security import get_current_user
+from ..security import get_current_user, require_role
 from .. import models, audit
 
 logger = logging.getLogger(__name__)
@@ -89,7 +90,44 @@ def get_account(
     )
     if account is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="계좌를 찾을 수 없습니다")
-    return account
+    return AccountOut(
+        account_id=account.account_id,
+        balance=account.balance,
+        held_amount=holds.held_amount(db, account_id),
+        currency=account.currency,
+        created_at=account.created_at,
+    )
+
+
+@router.get("/held", response_model=List[TransactionOut], summary="보류 중인 이체 목록 (FDS 임시조치)")
+def list_held_transfers(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_role("RISK_OFFICER", "ADMIN")),
+):
+    return holds.list_held(db)
+
+
+@router.post(
+    "/{transaction_id}/hold-decision",
+    response_model=TransactionOut,
+    summary="보류 이체 판단 — 승인(입금 실행) / 취소(출금 계좌로 반환)",
+)
+def decide_hold(
+    transaction_id: int,
+    body: HoldDecisionCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_role("RISK_OFFICER", "ADMIN")),
+):
+    """보류(held) 이체를 담당자가 판단한다. 승인과 취소가 동시에 와도 하나만 반영된다(app/holds.py)."""
+    try:
+        return holds.resolve(db, transaction_id, body.decision, actor_id=current_user.id, comment=body.comment)
+    except holds.NotHeld as exc:
+        if exc.status is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="거래를 찾을 수 없습니다")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"보류 상태인 이체만 판단할 수 있습니다 (현재 상태: {exc.status})",
+        )
 
 
 @router.post(
@@ -125,6 +163,8 @@ def transfer(
             )
         if stored is not None:
             response.headers["Idempotent-Replayed"] = "true"
+            if stored.status == holds.HELD:
+                response.status_code = status.HTTP_202_ACCEPTED
         return stored
 
     # 0. 이미 처리된 키면 FDS 채점·잠금 없이 바로 돌려준다 (최적화 — 보장은 유니크 제약)
@@ -177,9 +217,14 @@ def transfer(
         else:
             tx_status, reason = "success", "completed"
 
-        if tx_status == "success":
+        # FDS 임시조치 — 룰 점수가 HIGH면 입금하지 않고 보류 계정에 묶어 둔다(app/holds.py).
+        if tx_status == "success" and risk_score >= RISK_LEVEL_HIGH:
+            tx_status, reason = holds.HELD, "held by FDS"
+
+        if tx_status in ("success", holds.HELD):
+            move = ledger.apply_transfer if tx_status == "success" else ledger.apply_hold
             try:
-                balances = ledger.apply_transfer(sender, receiver, amount)
+                balances = move(sender, receiver, amount)
             except ledger.InsufficientBalance as exc:
                 tx_status, reason = "failed", "insufficient balance"
                 balances = _unchanged_balances(sender, receiver)
@@ -191,9 +236,11 @@ def transfer(
             db, req, tx_status, reason,
             risk_score=risk_score, balances=balances, commit=False,
         )
+        # 잔액을 옮긴 근거를 복식부기로 남긴다 — 잔액 변경·거래 기록과 같은 커밋.
         if tx_status == "success":
-            # 잔액을 옮긴 근거를 복식부기로 남긴다 — 잔액 변경·거래 기록과 같은 커밋.
             ledger.post_transfer(db, transaction, amount)
+        elif tx_status == holds.HELD:
+            ledger.post_hold(db, transaction, amount)
         if idempotency_key:
             # 잔액 변경·거래 기록·키가 한 커밋으로 묶인다 — 셋 중 일부만 남는 상태가 없다.
             idempotency.record(db, current_user.id, idempotency_key, req_hash, transaction)
@@ -241,8 +288,11 @@ def transfer(
     db.refresh(transaction)
 
     transaction_total.inc()
-    if tx_status != "success":
+    if tx_status == "failed":
         transaction_failed_total.inc()
+    elif tx_status == holds.HELD:
+        transfer_hold_total.labels(event="held").inc()
+        response.status_code = status.HTTP_202_ACCEPTED   # 접수했지만 아직 입금되지 않았다
 
     # 3a. ML 앙상블 점수 — sklearn 설치 + 모델 학습 완료 시에만 동작
     feat = None

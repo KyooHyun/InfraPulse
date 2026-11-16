@@ -39,6 +39,11 @@ DEFAULT_OPENING_BALANCE = Decimal("100000000.00")
 # 개설 잔액의 상대 계정. accounts 테이블에 없는 시스템 계정이라 잔액 대사 대상이 아니다.
 OPENING_EQUITY_ACCOUNT = "SYS-OPENING-EQUITY"
 
+# FDS 임시조치로 보류된 이체 금액이 머무는 시스템 계정. 보류하면 출금 계좌 → 이 계정,
+# 승인하면 이 계정 → 입금 계좌, 취소·만료되면 이 계정 → 출금 계좌로 옮긴다(app/holds.py).
+# accounts 테이블에 없으므로 잔액 대사 대신 "엔트리 누적 = 보류 중인 거래 금액 합"으로 검사한다.
+HOLD_ACCOUNT = "SYS-FDS-HOLD"
+
 CENT = Decimal("0.01")
 
 
@@ -145,6 +150,28 @@ def apply_transfer(
     }
 
 
+def apply_hold(
+    sender: models.Account,
+    receiver: models.Account,
+    amount: Decimal,
+) -> Dict[str, Decimal]:
+    """잠긴 출금 계좌에서 보류 계정으로 금액을 뺀다. 입금 계좌는 건드리지 않는다. 커밋은 호출자가 한다.
+
+    보류 금액은 출금 계좌의 잔액(가용 잔액)에서 바로 빠진다. 그래서 보류 중에 들어오는 다른 이체는
+    보류 금액을 다시 쓸 수 없다 — 잔액 검사가 기존 apply_transfer와 같은 잠금 구간에서 일어나기 때문이다.
+    """
+    sender_before = Decimal(sender.balance)
+    if sender_before < amount:
+        raise InsufficientBalance(sender.account_id, sender_before, amount)
+    sender.balance = sender_before - amount
+    return {
+        "balance_orig_before": sender_before,
+        "balance_orig_after": Decimal(sender.balance),
+        "balance_dest_before": Decimal(receiver.balance),
+        "balance_dest_after": Decimal(receiver.balance),
+    }
+
+
 def post_journal(
     db: Session,
     journal_id: str,
@@ -170,6 +197,14 @@ def post_transfer(db: Session, transaction: models.Transaction, amount: Decimal)
     post_journal(db, f"TX-{transaction.id}", [
         (transaction.account_from, -amount),
         (transaction.account_to, amount),
+    ], transaction.currency, transaction.id)
+
+
+def post_hold(db: Session, transaction: models.Transaction, amount: Decimal) -> None:
+    """보류 분개 — 출금 계좌 −금액, 보류 계정 +금액."""
+    post_journal(db, f"HOLD-{transaction.id}", [
+        (transaction.account_from, -amount),
+        (HOLD_ACCOUNT, amount),
     ], transaction.currency, transaction.id)
 
 

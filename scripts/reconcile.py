@@ -26,6 +26,9 @@ def main() -> int:
         print(f"  [분개 불균형] {journal_id}: 엔트리 합 {total}")
     for account_id, balance, expected in report.balance_mismatches:
         print(f"  [잔액 불일치] {account_id}: 잔액 {balance} / 엔트리 누적 {expected} (차이 {balance - expected})")
+    if report.hold_mismatch is not None:
+        entries, held = report.hold_mismatch
+        print(f"  [보류 불일치] 보류 계정 엔트리 누적 {entries} / 보류 중인 거래 합 {held} (차이 {entries - held})")
     print("일치" if report.ok else "불일치 발견")
     return 0 if report.ok else 1
 

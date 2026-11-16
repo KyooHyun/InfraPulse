@@ -64,7 +64,9 @@ export default function Transactions() {
       })
       const risk = result.risk_score ?? 0
       const level = risk >= 70 ? 'HIGH' : risk >= 40 ? 'MEDIUM' : 'LOW'
-      setMsg({ type: 'success', text: `거래 완료 — 위험점수 ${risk} (${level})` })
+      setMsg(result.status === 'held'
+        ? { type: 'error', text: `이체 보류 — 위험점수 ${risk} (${level}), 담당자 승인 전까지 입금되지 않습니다` }
+        : { type: 'success', text: `거래 ${result.status === 'success' ? '완료' : '실패'} — 위험점수 ${risk} (${level})` })
       setShowModal(false)
       load()
     } catch (err) {
@@ -142,7 +144,7 @@ export default function Transactions() {
                   <td><code style={{ fontSize: 12 }}>{tx.account_to}</code></td>
                   <td style={{ fontWeight: 600 }}>{fmtAmt(tx.amount, tx.currency)}</td>
                   <td>
-                    <span className={`badge ${tx.status === 'COMPLETED' ? 'badge-success' : tx.status === 'FAILED' ? 'badge-danger' : 'badge-gray'}`}>
+                    <span className={`badge ${tx.status === 'success' ? 'badge-success' : tx.status === 'failed' ? 'badge-danger' : 'badge-gray'}`}>
                       {tx.status}
                     </span>
                   </td>

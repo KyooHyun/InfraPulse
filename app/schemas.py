@@ -46,7 +46,8 @@ class AccountOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     account_id: str
-    balance: Decimal
+    balance: Decimal                       # 가용 잔액 — 보류 금액은 이미 빠져 있다
+    held_amount: Decimal = Decimal("0")    # FDS 임시조치로 보류 중인 출금 합 (원장 잔액 = balance + held_amount)
     currency: str
     created_at: datetime
 
@@ -233,6 +234,25 @@ class FdsDecisionOut(BaseModel):
 
 
 # ── 컴플라이언스 보고서 ────────────────────────────────────────────────────────
+
+class HoldDecisionCreate(BaseModel):
+    decision: str  # APPROVE(입금 실행) | CANCEL(출금 계좌로 반환)
+    comment: str   # 판단 근거 — 감사 로그에 남는다
+
+    @field_validator("decision")
+    @classmethod
+    def valid_decision(cls, v: str) -> str:
+        if v not in ("APPROVE", "CANCEL"):
+            raise ValueError("decision은 APPROVE 또는 CANCEL")
+        return v
+
+    @field_validator("comment")
+    @classmethod
+    def comment_required(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("판단 사유를 입력하세요")
+        return v.strip()
+
 
 class ComplianceReviewCreate(BaseModel):
     decision: str  # APPROVE(보고 대상) | DISMISS(보고 불필요)

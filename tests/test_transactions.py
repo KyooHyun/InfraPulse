@@ -48,13 +48,13 @@ def test_transfer_invalid_currency(client, staff_auth):
     assert resp.status_code == 422
 
 
-def _post(client, staff_auth, sender, recipient, amount):
+def _post(client, staff_auth, sender, recipient, amount, expected_status=201):
     resp = client.post(
         "/transactions/transfer",
         json={"account_from": sender, "account_to": recipient, "amount": amount, "currency": "KRW"},
         headers=staff_auth,
     )
-    assert resp.status_code == 201, resp.text
+    assert resp.status_code == expected_status, resp.text
     return resp.json()
 
 
@@ -80,16 +80,18 @@ def test_low_score_transfer_creates_no_alert(client, staff_auth, risk_auth):
     assert _alerts_for(client, risk_auth, tx["id"]) == []
 
 
-def test_balance_drain_reaches_high_and_drafts_str(client, staff_auth, risk_auth):
-    """잔액을 거의 비우는 이체는 룰만으로 HIGH(70점)에 도달하고 STR 초안이 생긴다.
+def test_balance_drain_reaches_high_and_drafts_str(client, staff_auth, risk_auth, monkeypatch):
+    """잔액을 거의 비우는 이체는 룰만으로 HIGH(70점)에 도달해 보류(202, held)되고 STR 초안이 생긴다.
 
     새 계좌의 개설 잔액(1억)의 95%를 처음 보는 수취인에게 보낸다:
     BALANCE_DRAIN 45 + HIGH_VALUE 20 + HIGH_VALUE_TOP 10 + NEW_RECIPIENT 10 = 85점.
     예전 가중치로는 룰만으로 HIGH에 도달할 수 없어 이 경로가 죽어 있었다.
     """
-    tx = _post(client, staff_auth, "ACC-TX-DRAIN", "ACC-TX-DRAIN-NEW", 95_000_000)
+    monkeypatch.setattr("app.routers.transactions.random", lambda: 0.99)   # 무작위 대외계 실패를 끈다
+    tx = _post(client, staff_auth, "ACC-TX-DRAIN", "ACC-TX-DRAIN-NEW", 95_000_000, expected_status=202)
 
     assert tx["risk_score"] == 85.0
+    assert tx["status"] == "held"
     reports = client.get("/compliance/reports", headers=risk_auth).json()
     drafts = [r for r in reports if r["transaction_id"] == tx["id"]]
     assert len(drafts) == 1 and drafts[0]["status"] == "DRAFT"

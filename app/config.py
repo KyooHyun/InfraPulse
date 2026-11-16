@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # 학습 데이터와 운영 거래의 통화·분포가 같은지는 켜는 사람이 확인해야 한다.
     fds_ml_enabled: bool = False
 
+    # FDS 임시조치 — 룰 점수 HIGH 이체를 보류한다(app/holds.py). 담당자가 이 시간 안에 판단하지 않으면
+    # 만료 작업자(app/hold_expiry.py, docker-compose의 hold-expirer)가 취소해 출금 계좌로 돌려준다.
+    fds_hold_ttl_hours: int = 24
+
     @field_validator("jwt_secret_key")
     @classmethod
     def warn_default_jwt_secret(cls, v: str) -> str:

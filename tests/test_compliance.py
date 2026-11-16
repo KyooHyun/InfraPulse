@@ -13,15 +13,15 @@ def _transfer(client, staff_auth, amount):
         json={"account_from": "ACC-C001", "account_to": "ACC-C002", "amount": amount, "currency": "KRW"},
         headers=staff_auth,
     )
-    assert resp.status_code in (200, 201), resp.text
+    assert resp.status_code in (201, 202), resp.text   # 202 = 잔액을 비우는 이체가 HIGH로 보류됨
     return resp.json()
 
 
 def _make_str_draft(client, staff_auth, db_session, amount=20_000_000) -> int:
     """이체를 하나 만들고 그 거래에 STR 초안을 붙인다.
 
-    룰 단독 구성에서는 HIGH(70점)에 도달하지 못하므로(calibration/reachability.py)
-    API 경로로는 STR을 만들 수 없다. 검토 흐름만 검증하려고 생성 함수를 직접 부른다.
+    검토 흐름만 검증하려고 생성 함수를 직접 부른다 — 점수로 STR이 생기는 경로는
+    test_transactions.py::test_balance_drain_reaches_high_and_drafts_str가 따로 검증한다.
     """
     tx_id = _transfer(client, staff_auth, amount)["id"]
     tx = db_session.get(models.Transaction, tx_id)

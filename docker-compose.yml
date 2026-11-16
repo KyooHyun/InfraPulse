@@ -23,6 +23,29 @@ services:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-changeme-replace-with-strong-random-key-in-production}
       - JWT_EXPIRE_MINUTES=60
 
+  # FDS 임시조치 만료 — 보류 시간(FDS_HOLD_TTL_HOURS, 기본 24)이 지난 이체를 5분마다 취소해 출금 계좌로 돌려준다.
+  # 이 작업자가 없으면 담당자가 판단하지 않은 보류는 무기한 묶인다 (app/hold_expiry.py).
+  hold-expirer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: finops-hold-expirer
+    command: ["python", "-m", "app.hold_expiry", "--every", "300"]
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      transaction-api:
+        condition: service_started   # 테이블은 API 기동 시 만들어진다
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=finops_user
+      - MYSQL_PASSWORD=finops_pass
+      - MYSQL_DATABASE=finops
+
   simulator:
     build:
       context: ./simulator

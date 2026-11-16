@@ -82,3 +82,10 @@ transfer_lock_retry_total = Counter(
     "Transfer transactions retried after a lock conflict (deadlock / lock wait timeout)",
     ["reason"],
 )
+
+# FDS 임시조치 — held(보류됨) / approved(승인·입금) / cancelled(담당자 취소) / expired(시간 초과 취소)
+transfer_hold_total = Counter(
+    "transfer_hold_total",
+    "Transfers held by FDS and how the holds were resolved",
+    ["event"],
+)
