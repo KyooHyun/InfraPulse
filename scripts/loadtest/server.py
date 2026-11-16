@@ -8,11 +8,14 @@
   no-audit    감사 로그 기록(app.audit.log_event)을 no-op으로 — audit_chain_head 단일 행 FOR UPDATE의 비용
   no-scoring  FDS 룰 채점(evaluate_transaction)을 0점으로 — 채점 쿼리 3개(velocity, 수취인 입금 수,
               최근 50건 실패율)의 비용. 거래 전 잔액 조회와 룰 목록 조회는 남는다.
+  hold-10pct  실제로 채점한 뒤 이체의 10%를 HIGH(85점)로 올린다 — 보류 경로(보류 분개, FDS 알림, STR 초안,
+              202 응답)의 비용. 부하 테스트 금액(1천~3만 원)은 그대로는 HIGH에 닿지 않기 때문이다.
 DB 접속은 운영과 같은 설정(MYSQL_HOST 등 환경 변수)을 쓴다.
 """
 from __future__ import annotations
 
 import argparse
+import random
 import sys
 from pathlib import Path
 
@@ -24,7 +27,7 @@ from app import audit
 from app.main import app
 from app.routers import transactions
 
-VARIANTS = ("baseline", "no-audit", "no-scoring")
+VARIANTS = ("baseline", "no-audit", "no-scoring", "hold-10pct")
 
 
 def main() -> None:
@@ -37,6 +40,17 @@ def main() -> None:
         audit.log_event = lambda *a, **k: None
     elif args.variant == "no-scoring":
         transactions.evaluate_transaction = lambda *a, **k: (0.0, [], [])
+    elif args.variant == "hold-10pct":
+        real = transactions.evaluate_transaction
+        rng = random.Random(11)
+
+        def sometimes_high(*a, **k):
+            score, triggered, contributions = real(*a, **k)
+            if rng.random() < 0.10:
+                return max(score, 85.0), triggered + ["BALANCE_DRAIN"], contributions
+            return score, triggered, contributions
+
+        transactions.evaluate_transaction = sometimes_high
 
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
 

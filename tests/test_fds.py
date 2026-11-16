@@ -211,3 +211,22 @@ def test_comparison_pending_until_remeasured(client, risk_auth):
     resp = client.get("/fds/comparison", headers=risk_auth)
     assert resp.status_code == 200
     assert resp.json()["status"] == "pending"
+
+
+def test_transfer_path_does_not_query_failure_rate(client, db_session):
+    """FAILURE_RATE는 점수에 들어가지 않으므로 이체 경로(기본값)에서는 최근 거래를 조회하지 않는다."""
+    from sqlalchemy import event
+
+    from app.fds_engine import collect_signals
+
+    statements = []
+    listener = lambda conn, cursor, statement, *a: statements.append(statement)
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", listener)
+    try:
+        signals = collect_signals(10_000, "ACC-NO-FR", db_session, account_to="ACC-NO-FR-R")
+    finally:
+        event.remove(engine, "before_cursor_execute", listener)
+
+    assert signals["FAILURE_RATE"] is None
+    assert not any("LIMIT" in s.upper() and "ORDER BY" in s.upper() for s in statements), statements

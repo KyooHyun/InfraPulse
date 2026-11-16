@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Boolean, Column, ForeignKey, Integer, String, Double, Numeric, DateTime, Text, UniqueConstraint, func,
+    Boolean, Column, ForeignKey, Index, Integer, String, Double, Numeric, DateTime, Text, UniqueConstraint, func,
 )
 from .db import Base
 
@@ -38,6 +38,8 @@ class LedgerEntry(Base):
     잔액 컬럼(accounts.balance)은 그대로 두고, 돈이 움직일 때마다 그 근거를 두 행 이상으로 남긴다.
       이체:  출금 계좌 −금액, 입금 계좌 +금액              (journal_id = "TX-<거래 id>")
       개설:  시스템 자본 계정 −개설금액, 새 계좌 +개설금액  (journal_id = "OPEN-<계좌번호>")
+      보류:  출금 계좌 −금액, 보류 계정 +금액                (journal_id = "HOLD-<거래 id>", app/holds.py)
+      해제:  보류 계정 −금액, 입금(승인)·출금(취소) 계좌 +금액 (journal_id = "RELEASE-" / "CANCEL-<거래 id>")
     지켜야 할 조건 두 가지를 app/reconciliation.py가 검사한다.
       1) 분개(journal_id)마다 엔트리 합이 0 — 돈이 생기거나 사라지지 않았다
       2) 계좌 잔액 = 그 계좌 엔트리의 누적 — 잔액 컬럼이 근거 없이 바뀌지 않았다
@@ -55,6 +57,13 @@ class LedgerEntry(Base):
 
 class Transaction(Base):
     __tablename__ = "transactions"
+    # FDS 채점 쿼리(app/fds_engine.collect_signals)가 이체마다 돈다. 인덱스가 없으면 전체 스캔이라
+    # 거래가 쌓일수록 이체 지연이 늘어난다(docs/transaction-integrity.md의 100만 행 전후 비교).
+    __table_args__ = (
+        Index("ix_transactions_from_created", "account_from", "created_at"),   # VELOCITY: 송금 계좌의 최근 10분
+        Index("ix_transactions_to_created", "account_to", "created_at"),       # NEW_RECIPIENT: 수취 계좌의 최근 24시간
+        Index("ix_transactions_created_id", "created_at", "id"),               # 최근 거래 순 조회(거래 목록, 실패율 분석)
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     account_from = Column(String(64), nullable=False)

@@ -4,7 +4,7 @@
     python scripts/loadtest/run.py --url http://127.0.0.1:8100 --concurrency 20 --duration 30 --label baseline
 
 첫 --warmup초는 집계에서 뺀다(계좌 개설, 커넥션 풀 준비). 결과는 한 줄 JSON으로 출력한다.
-처리량은 201 응답 기준이고, 지연은 클라이언트에서 잰 요청 왕복 시간이다.
+처리량은 201(완료)·202(보류) 응답 기준이고, 지연은 클라이언트에서 잰 요청 왕복 시간이다.
 """
 from __future__ import annotations
 
@@ -34,7 +34,9 @@ async def _worker(client, headers, accounts, start, warm_until, deadline, out, r
                       "amount": rng.choice([1_000, 5_000, 12_000, 30_000]), "currency": "KRW"},
                 headers=headers,
             )
-            ok = resp.status_code == 201
+            ok = resp.status_code in (201, 202)
+            if ok and t0 >= warm_until and resp.status_code == 202:
+                out["held"] += 1
         except httpx.HTTPError:
             ok = False
         elapsed = time.perf_counter() - t0
@@ -57,7 +59,7 @@ async def main() -> None:
     async with httpx.AsyncClient(base_url=args.url, timeout=60.0, limits=limits) as client:
         token = (await client.post("/auth/token", data={"username": "staff", "password": "Staff1234!"})).json()
         headers = {"Authorization": f"Bearer {token['access_token']}"}
-        out = {"latencies": [], "errors": []}
+        out = {"latencies": [], "errors": [], "held": 0}
         start = time.perf_counter()
         warm_until = start + args.warmup
         deadline = warm_until + args.duration
@@ -74,6 +76,7 @@ async def main() -> None:
         "duration_s": args.duration,
         "requests": len(lat),
         "errors": len(out["errors"]),
+        "held": out["held"],
         "throughput_rps": round(len(lat) / args.duration, 1),
         "p50_ms": round(statistics.median(lat) * 1000, 1) if lat else None,
         "p95_ms": round(_pct(lat, 0.95) * 1000, 1),

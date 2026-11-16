@@ -53,6 +53,7 @@ def replayed(client):
         live_signals.append(collect_signals(
             amount, account, db_session, now=now,
             account_to=recipient, balance_orig_before=before, balance_dest_before=dest_before,
+            include_system_signals=True,   # 실패율 신호 정의도 calibration과 같은지 확인한다
         ))
 
         db_session.add(models.Transaction(

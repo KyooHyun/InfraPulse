@@ -155,12 +155,16 @@ def collect_signals(
     account_to: Optional[str] = None,
     balance_orig_before: Optional[float] = None,
     balance_dest_before: Optional[float] = None,
+    include_system_signals: bool = False,
 ) -> Dict[str, Any]:
     """DB에서 원천값을 모아 룰 신호를 만든다. 현재 거래는 아직 기록되기 전이다.
 
     - VELOCITY:      동일 송금 계좌의 VELOCITY_WINDOW_MINUTES 내 거래 건수(현재 건 포함)
     - NEW_RECIPIENT: 수취 계좌가 RECIPIENT_WINDOW_MINUTES 내 받은 입금 건수(현재 건 제외)
-    - FAILURE_RATE:  최근 FAILURE_RATE_WINDOW건의 실패율 (시스템 신호, 점수에 쓰지 않음)
+    - FAILURE_RATE:  최근 FAILURE_RATE_WINDOW건의 실패율 (시스템 신호, 점수에 쓰지 않음).
+                     include_system_signals=True일 때만 센다. 이체 경로는 끈다 — 점수(TRANSACTION_SCOPED_RULES)에
+                     들어가지 않는 값을 이체마다 조회할 이유가 없다. 실패율 모니터링은 GET /fds/stats가 따로 한다.
+                     동등성 테스트·오프라인 분석은 켜서 신호 정의가 calibration과 같은지 확인한다.
     잔액은 호출자가 넘긴다(이체 경로는 잠그지 않고 읽은 거래 전 잔액).
 
     now: 윈도우의 기준 시각. 운영에서는 비워 둔다(현재 시각). 과거 거래를 같은 정의로
@@ -177,7 +181,7 @@ def collect_signals(
         .order_by(models.Transaction.created_at.desc(), models.Transaction.id.desc())
         .limit(FAILURE_RATE_WINDOW)
         .all()
-    )
+    ) if include_system_signals else []
     if len(recent_statuses) >= FAILURE_RATE_WINDOW:
         failure_rate = round(
             sum(1 for (s,) in recent_statuses if s == "failed") / len(recent_statuses), 4
