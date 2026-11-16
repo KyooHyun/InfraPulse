@@ -5,12 +5,12 @@ pydantic-settings>=2.0,<3
 sqlalchemy==2.0.32
 pymysql==1.1.1
 prometheus-client==0.20.0
-python-dotenv==1.0.1
-requests==2.32.3
-cryptography==42.0.8
-python-jose==3.3.0
+python-dotenv==1.2.4
+requests==2.34.2
+cryptography==50.0.2   # needed by pymysql for MySQL 8 caching_sha2_password auth
+PyJWT==2.15.1   # replaces python-jose (unfixed advisories, pulls in ecdsa)
 bcrypt==4.2.1
-python-multipart==0.0.9
+python-multipart==0.0.34
 scikit-learn>=1.3.0
 pandas>=2.0.0
 numpy>=1.24.0

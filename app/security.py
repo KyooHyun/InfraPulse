@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
-from jose import JWTError, jwt
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -46,7 +46,7 @@ def get_current_user(
         username: str = payload.get("sub")
         if not username:
             raise exc
-    except JWTError:
+    except jwt.InvalidTokenError:   # 서명 불일치·만료·형식 오류 모두
         raise exc
 
     user = db.query(models.User).filter(models.User.username == username).first()

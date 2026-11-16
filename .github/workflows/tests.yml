@@ -36,6 +36,18 @@ jobs:
       - name: Test
         run: pytest tests/ -q
 
+  audit:
+    # 의존성의 알려진 취약점(PyPI Advisory DB·OSV) 검사. 하나라도 있으면 실패한다.
+    name: pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pip-audit
+      - run: pip-audit -r app/requirements.txt -r simulator/requirements.txt
+
   frontend:
     name: frontend build
     runs-on: ubuntu-latest
